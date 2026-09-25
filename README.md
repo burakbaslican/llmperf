@@ -2,7 +2,41 @@
 
 Yerel Ollama performansını (token/s, ajanlar, GPU) canlı izleyen web paneli.
 
-## Hızlı kurulum (Docker)
+## GitHub Release’ten kurulum
+
+Repo: https://github.com/burakbaslican/llmperf/releases/tag/v1.2.0  
+(Private repo → `gh auth login` gerekli.)
+
+### Mac M2 Ultra — Docker Desktop (önerilen)
+
+```bash
+gh release download v1.2.0 -R burakbaslican/llmperf -p 'llmperf-docker-mac-arm64-1.2.0.tar.gz' \
+  && tar -xzf llmperf-docker-mac-arm64-1.2.0.tar.gz \
+  && cd llmperf-docker-mac-arm64-1.2.0 \
+  && ./install-docker-mac.sh up
+```
+
+### Mac M2 Ultra — native Python
+
+```bash
+gh release download v1.2.0 -R burakbaslican/llmperf -p 'llmperf-mac-arm64-1.2.0.tar.gz' \
+  && tar -xzf llmperf-mac-arm64-1.2.0.tar.gz \
+  && cd llmperf-mac-arm64-1.2.0 \
+  && ./install-mac.sh up
+```
+
+### Linux — Docker
+
+```bash
+gh release download v1.2.0 -R burakbaslican/llmperf -p 'llmperf-1.2.0.tar.gz' \
+  && tar -xzf llmperf-1.2.0.tar.gz \
+  && cd llmperf-1.2.0 \
+  && ./install.sh up
+```
+
+Panel: **http://127.0.0.1:8080** · durdurmak: `./install*.sh down`
+
+## Hızlı kurulum (yerel paket)
 
 **Gereksinimler:** Docker + Docker Compose, host’ta çalışan Ollama (`11434`).
 
