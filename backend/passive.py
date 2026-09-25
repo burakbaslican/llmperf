@@ -105,9 +105,13 @@ class PassiveObserver:
             if not part:
                 continue
             try:
-                ports.append(int(part))
+                port = int(part)
             except ValueError:
                 continue
+            # Ollama API portu /slots değildir
+            if port == self._ollama_port or port in (80, 443, 8080):
+                continue
+            ports.append(port)
         # unique preserve order
         seen: set[int] = set()
         out: list[int] = []
@@ -222,12 +226,126 @@ class PassiveObserver:
                     f"http://{self._slots_host}:{port}/slots"
                 )
                 resp.raise_for_status()
-                data = resp.json()
-                if isinstance(data, list) and data:
-                    return data[0]
+                return self._normalize_slot_payload(resp.json())
         except Exception:  # noqa: BLE001
             return None
+
+    @staticmethod
+    def _normalize_slot_payload(data: Any) -> dict[str, Any] | None:
+        """llama.cpp /slots: liste veya tek nesne; sarmal {slots:[...]} olabilir."""
+        slot: Any = None
+        if isinstance(data, list):
+            if not data:
+                return None
+            slot = data[0]
+        elif isinstance(data, dict):
+            if isinstance(data.get("slots"), list) and data["slots"]:
+                slot = data["slots"][0]
+            else:
+                slot = data
+        return slot if isinstance(slot, dict) else None
+
+    @staticmethod
+    def _slot_n_decoded(slot: dict[str, Any]) -> int:
+        nt = slot.get("next_token")
+        if isinstance(nt, list) and nt:
+            nt = nt[0]
+        if isinstance(nt, dict):
+            try:
+                return int(nt.get("n_decoded") or 0)
+            except (TypeError, ValueError):
+                return 0
+        for key in ("n_decoded", "decoded_tokens", "n_tokens_decoded"):
+            if key in slot:
+                try:
+                    return int(slot.get(key) or 0)
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+
+    @staticmethod
+    def _slot_is_processing(slot: dict[str, Any]) -> bool:
+        for key in ("is_processing", "processing", "busy"):
+            if key in slot:
+                return bool(slot.get(key))
+        return False
+
+    @staticmethod
+    def _slot_prompt_tokens(slot: dict[str, Any]) -> int:
+        for key in ("n_prompt_tokens", "prompt_tokens", "n_prompt"):
+            if key in slot:
+                try:
+                    return int(slot.get(key) or 0)
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+
+    @staticmethod
+    def _slot_model_hint(slot: dict[str, Any]) -> str | None:
+        for key in ("model", "model_name", "name"):
+            val = slot.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        task = slot.get("task")
+        if isinstance(task, dict):
+            for key in ("model", "model_name"):
+                val = task.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
         return None
+
+    def _assign_models_to_runners(
+        self,
+        runners: list[ProcSample],
+        running: list[dict[str, Any]],
+        digest_index: dict[str, str],
+        slot_hints: dict[int, str | None],
+    ) -> dict[int, str]:
+        """port → model. blob_sha yoksa (Mac) /api/ps ile eşle."""
+        port_model: dict[int, str] = {}
+        used_models: set[str] = set()
+
+        for r in runners:
+            if not r.port:
+                continue
+            name = digest_index.get(r.blob_sha or "", "")
+            if name:
+                port_model[r.port] = name
+                used_models.add(name)
+                continue
+            hint = slot_hints.get(r.port)
+            if hint:
+                match = next(
+                    (
+                        (m.get("name") or m.get("model") or "")
+                        for m in running
+                        if (m.get("name") or m.get("model") or "") == hint
+                        or hint in (m.get("name") or m.get("model") or "")
+                    ),
+                    hint,
+                )
+                if match:
+                    port_model[r.port] = match
+                    used_models.add(match)
+
+        remaining_ports = [r.port for r in runners if r.port and r.port not in port_model]
+        remaining_models = [
+            (m.get("name") or m.get("model") or "")
+            for m in running
+            if (m.get("name") or m.get("model") or "")
+            and (m.get("name") or m.get("model") or "") not in used_models
+        ]
+        for port, model in zip(remaining_ports, remaining_models):
+            port_model[port] = model
+        if (
+            len(remaining_ports) == 1
+            and len(running) == 1
+            and remaining_ports[0] not in port_model
+        ):
+            only = running[0].get("name") or running[0].get("model")
+            if only:
+                port_model[remaining_ports[0]] = str(only)
+        return port_model
 
     def _client_candidates(self, clients: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -291,19 +409,20 @@ class PassiveObserver:
             "prompt_tokens": 0,
             "slot_processing": False,
             "agent": None,
+            "model_hint": None,
         }
         if not slot:
             return meta
 
-        nt = (slot.get("next_token") or [{}])[0]
-        decoded = int(nt.get("n_decoded") or 0)
-        processing = bool(slot.get("is_processing"))
-        prompt_tokens = int(slot.get("n_prompt_tokens") or 0)
+        decoded = self._slot_n_decoded(slot)
+        processing = self._slot_is_processing(slot)
+        prompt_tokens = self._slot_prompt_tokens(slot)
         task_id = slot.get("id_task")
         now = time.time()
 
         meta["prompt_tokens"] = prompt_tokens
         meta["slot_processing"] = processing
+        meta["model_hint"] = self._slot_model_hint(slot)
 
         # New task / generation start — freeze agent for this run only
         if processing and (
@@ -403,37 +522,64 @@ class PassiveObserver:
         digest_index.update(self._blob_to_model)
 
         runners = list_llama_runners(self.cpu)
-        # Docker Desktop (Mac): host süreçleri görünmez → /slots port keşfi
-        if not runners and (
+        # Docker Desktop / Mac: host süreçleri görünmez veya ad farklı → /slots port keşfi
+        need_ports = (
             settings.slots_discover
-            or settings.slots_ports
-            or settings.slots_ports_file
-            or self._known_slot_ports
-        ):
+            or bool(settings.slots_ports)
+            or bool(settings.slots_ports_file)
+            or bool(self._known_slot_ports)
+        )
+        if not runners and need_ports:
             await self._refresh_known_slot_ports()
             runners = self._synthetic_runners_from_ports()
         elif runners:
             for r in runners:
                 if r.port:
                     self._known_slot_ports.add(r.port)
+            # Süreç var ama --port yoksa host port dosyasını kullan
+            if need_ports and not any(r.port for r in runners):
+                await self._refresh_known_slot_ports()
+                synth = self._synthetic_runners_from_ports()
+                if synth:
+                    runners = synth
 
         clients = list_clients_on_port(self._ollama_port)
-        # Single label for load/unload events only (not for tok/s bars)
         event_agent = self._select_active_agent(clients)
+
+        # Önce slot'lardan model ipucu topla
+        slot_hints: dict[int, str | None] = {}
+        for r in runners:
+            if not r.port:
+                continue
+            try:
+                slot = await self._fetch_slots(r.port)
+                slot_hints[r.port] = self._slot_model_hint(slot) if slot else None
+            except Exception:  # noqa: BLE001
+                slot_hints[r.port] = None
+
+        port_models = self._assign_models_to_runners(
+            runners, running, digest_index, slot_hints
+        )
 
         observed: list[dict[str, Any]] = []
         runner_by_model: dict[str, dict[str, Any]] = {}
 
         for r in runners:
-            model = digest_index.get(r.blob_sha or "", "unknown")
+            model = port_models.get(r.port or -1) or digest_index.get(
+                r.blob_sha or "", "unknown"
+            )
             slot_meta: dict[str, Any] = {}
             if r.port:
-                slot_meta = await self._update_slot_metrics(
-                    port=r.port, model=model, clients=clients
-                )
+                try:
+                    slot_meta = await self._update_slot_metrics(
+                        port=r.port, model=model, clients=clients
+                    )
+                except Exception:  # noqa: BLE001
+                    slot_meta = {}
+                if model == "unknown" and slot_meta.get("model_hint"):
+                    model = str(slot_meta["model_hint"])
 
             slot_processing = bool(slot_meta.get("slot_processing"))
-            # tok/s / "inferring" only when the runner slot is actually generating
             inferring = slot_processing
             busy = (not inferring) and (r.cpu_raw >= settings.runner_cpu_active_pct)
             if inferring:
@@ -444,7 +590,7 @@ class PassiveObserver:
                 status = "loaded"
 
             row = {
-                "pid": r.pid,
+                "pid": r.pid or None,
                 "model": model,
                 "blob_sha": (r.blob_sha or "")[:12],
                 "cpu_pct": r.cpu_pct,
@@ -458,11 +604,10 @@ class PassiveObserver:
                 "avg_tps": slot_meta.get("avg_tps") if slot_processing else None,
                 "tokens": (slot_meta.get("tokens") or 0) if slot_processing else 0,
                 "prompt_tokens": slot_meta.get("prompt_tokens") or 0,
-                # Only the frozen active agent while generating — never all clients
                 "agent": slot_meta.get("agent") if slot_processing else None,
             }
             observed.append(row)
-            if model != "unknown":
+            if model and model != "unknown":
                 runner_by_model[model] = row
 
         now = time.time()

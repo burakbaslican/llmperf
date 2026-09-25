@@ -41,13 +41,33 @@ def _read_text(path: Path) -> str | None:
 
 
 def _parse_port_from_cmdline(cmd: str) -> int | None:
-    m = re.search(r"--port\s+(\d+)", cmd)
+    m = re.search(r"--port(?:=|\s+)(\d+)", cmd)
     return int(m.group(1)) if m else None
 
 
 def _blob_sha_from_cmdline(cmd: str) -> str | None:
     m = SHA_RE.search(cmd)
     return m.group(1) if m else None
+
+
+def is_llama_runner_cmd(cmd: str) -> bool:
+    """Ollama Mac/Linux runner süreçlerini yakala (llama-server veya ollama runner)."""
+    low = cmd.lower()
+    if not low.strip():
+        return False
+    # Ana ollama serve / app — runner değil
+    if re.search(r"\bollama(\s+|$)serve\b", low) or "ollama app" in low:
+        return False
+    if "llama-server" in low:
+        return True
+    if "ollama" in low and ("runner" in low or "/runners/" in low):
+        return True
+    # Bazı sürümlerde yalnızca --model + --port
+    if "ollama" in low and _parse_port_from_cmdline(cmd) and (
+        "--model" in low or "gguf" in low or "sha256-" in low
+    ):
+        return True
+    return False
 
 
 class CpuTracker:
@@ -146,9 +166,9 @@ def _list_llama_runners_linux(cpu: CpuTracker) -> list[ProcSample]:
         if not cmdline_raw:
             continue
         cmd = cmdline_raw.replace("\x00", " ").strip()
-        if "llama-server" not in cmd:
+        if not is_llama_runner_cmd(cmd):
             continue
-        name = "llama-server"
+        name = "llama-runner"
         comm = _read_text(entry / "comm")
         if comm:
             name = comm.strip()
@@ -180,22 +200,22 @@ def _list_llama_runners_darwin(cpu: CpuTracker) -> list[ProcSample]:
         return runners
     for line in out.splitlines():
         line = line.strip()
-        if "llama-server" not in line:
-            continue
         parts = line.split(None, 2)
         if len(parts) < 3:
+            continue
+        cmd = parts[2]
+        if not is_llama_runner_cmd(cmd):
             continue
         try:
             pid = int(parts[0])
             rss_kb = int(float(parts[1]))
         except ValueError:
             continue
-        cmd = parts[2]
         cpu_pct, cpu_raw, _ = cpu.sample(pid)
         runners.append(
             ProcSample(
                 pid=pid,
-                name="llama-server",
+                name="llama-runner",
                 cmdline=cmd[:300],
                 cpu_pct=cpu_pct,
                 rss_bytes=rss_kb * 1024,

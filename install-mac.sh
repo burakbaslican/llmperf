@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # LLMPerf — macOS (Apple Silicon / M2 Ultra) native kurulum
-# Docker VM host /proc ve llama-server /slots göremez; bu yüzden native Python kullanılır.
+# Docker VM host süreçlerini göremez; native Python + slots port izleyici kullanılır.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,6 +9,8 @@ cd "$ROOT"
 VENV="${ROOT}/.venv"
 PID_FILE="${ROOT}/.llmperf.pid"
 LOG_FILE="${ROOT}/.llmperf.log"
+PORTS_FILE="${ROOT}/.llmperf-slots-ports"
+WATCH_PID_FILE="${ROOT}/.llmperf-ports-watch.pid"
 HOST="${LLMPERF_HOST:-127.0.0.1}"
 PORT="${LLMPERF_PORT:-8080}"
 
@@ -23,9 +25,6 @@ find_python() {
   local p
   for p in "${candidates[@]}"; do
     if command -v "$p" >/dev/null 2>&1; then
-      local ver
-      ver="$("$p" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-      # 3.10+
       if "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
         echo "$p"
         return 0
@@ -40,9 +39,7 @@ ensure_env() {
     cp .env.example .env
     echo ".env oluşturuldu (.env.example'dan)."
   fi
-  # shellcheck disable=SC1091
   set -a
-  # .env'deki LLMPERF_* değerlerini yükle (yorum/ boş satır atla)
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
     export "$line"
@@ -68,6 +65,33 @@ setup_venv() {
   echo "Bağımlılıklar hazır."
 }
 
+write_ports() {
+  local ports
+  chmod +x "${ROOT}/scripts/detect-slots-ports.sh" 2>/dev/null || true
+  ports="$("${ROOT}/scripts/detect-slots-ports.sh" 2>/dev/null || true)"
+  echo "$ports" >"$PORTS_FILE"
+}
+
+start_ports_watch() {
+  stop_ports_watch
+  touch "$PORTS_FILE"
+  write_ports
+  (
+    while true; do
+      write_ports
+      sleep 2
+    done
+  ) &
+  echo $! >"$WATCH_PID_FILE"
+}
+
+stop_ports_watch() {
+  if [[ -f "$WATCH_PID_FILE" ]]; then
+    kill "$(cat "$WATCH_PID_FILE")" 2>/dev/null || true
+    rm -f "$WATCH_PID_FILE"
+  fi
+}
+
 is_running() {
   if [[ -f "$PID_FILE" ]]; then
     local pid
@@ -84,10 +108,12 @@ cmd_up() {
   require_macos
   ensure_env
   setup_venv
+  start_ports_watch
 
   if is_running; then
     echo "LLMPerf zaten çalışıyor (pid $(cat "$PID_FILE"))."
     echo "Panel: http://${HOST}:${PORT}"
+    echo "Slots ports: $(cat "$PORTS_FILE" 2>/dev/null || echo '-')"
     return 0
   fi
 
@@ -98,7 +124,8 @@ cmd_up() {
   nohup env \
     LLMPERF_OLLAMA_BASE_URL="${LLMPERF_OLLAMA_BASE_URL:-http://127.0.0.1:11434}" \
     LLMPERF_POLL_INTERVAL_SEC="${LLMPERF_POLL_INTERVAL_SEC:-0.4}" \
-    LLMPERF_SLOTS_HOST="${LLMPERF_SLOTS_HOST:-}" \
+    LLMPERF_SLOTS_HOST="${LLMPERF_SLOTS_HOST:-127.0.0.1}" \
+    LLMPERF_SLOTS_PORTS_FILE="${PORTS_FILE}" \
     LLMPERF_PROC_ROOT="" \
     "${VENV}/bin/uvicorn" backend.main:app \
       --host "$HOST" \
@@ -110,8 +137,10 @@ cmd_up() {
     echo ""
     echo "Panel: http://${HOST}:${PORT}"
     echo "Log:   $LOG_FILE"
+    echo "Slots: $(cat "$PORTS_FILE" 2>/dev/null || echo '-')"
     echo "Durdurmak: $0 down"
   else
+    stop_ports_watch
     echo "Başlatılamadı. Son log:"
     tail -n 40 "$LOG_FILE" 2>/dev/null || true
     exit 1
@@ -119,6 +148,7 @@ cmd_up() {
 }
 
 cmd_down() {
+  stop_ports_watch
   if ! is_running; then
     echo "LLMPerf çalışmıyor."
     return 0
@@ -126,7 +156,6 @@ cmd_down() {
   local pid
   pid="$(cat "$PID_FILE")"
   kill "$pid" 2>/dev/null || true
-  # kısa bekleme
   for _ in 1 2 3 4 5; do
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.3
@@ -146,6 +175,7 @@ cmd_logs() {
 cmd_status() {
   if is_running; then
     echo "çalışıyor  pid=$(cat "$PID_FILE")  http://${HOST}:${PORT}"
+    echo "slots ports: $(cat "$PORTS_FILE" 2>/dev/null || echo '-')"
   else
     echo "durdu"
   fi
@@ -167,11 +197,6 @@ case "$MODE" in
   rebuild)      cmd_rebuild ;;
   *)
     echo "Kullanım: $0 {up|down|logs|status|rebuild}"
-    echo "  up       — venv kur + native başlat (M1/M2/M3)"
-    echo "  down     — durdur"
-    echo "  logs     — logları izle"
-    echo "  status   — durum"
-    echo "  rebuild  — venv sıfırla ve yeniden başlat"
     exit 1
     ;;
 esac

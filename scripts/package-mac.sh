@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${1:-1.2.0}"
+VERSION="${1:-1.2.1}"
 NAME="llmperf-mac-arm64-${VERSION}"
 OUT_DIR="${ROOT}/dist"
 STAGE="${OUT_DIR}/${NAME}"
@@ -15,6 +15,8 @@ mkdir -p "${STAGE}"
 
 cp -a backend frontend "${STAGE}/"
 cp install-mac.sh .env.example README.md "${STAGE}/"
+mkdir -p "${STAGE}/scripts"
+cp scripts/detect-slots-ports.sh "${STAGE}/scripts/"
 [[ -f .gitignore ]] && cp .gitignore "${STAGE}/"
 
 # Docker dosyaları Mac native pakete gerekmez; karışıklık olmasın diye ekleme.
@@ -23,7 +25,7 @@ find "${STAGE}" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || tru
 find "${STAGE}" -type d -name '.venv' -exec rm -rf {} + 2>/dev/null || true
 find "${STAGE}" -name '*.pyc' -delete 2>/dev/null || true
 
-chmod +x "${STAGE}/install-mac.sh"
+chmod +x "${STAGE}/install-mac.sh" "${STAGE}/scripts/detect-slots-ports.sh"
 
 # Kısa MAC.md kurulum notu
 cat > "${STAGE}/MAC.md" <<'EOF'

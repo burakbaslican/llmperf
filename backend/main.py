@@ -65,12 +65,20 @@ async def refresh_ollama_state() -> None:
     try:
         store.models = await ollama.list_models()
         store.running = await ollama.running_models()
-        await observer.tick(store.running, store.models)
     except Exception as exc:  # noqa: BLE001
         store.ollama_status = {
             "ok": False,
             "url": health.get("url"),
             "error": str(exc),
+        }
+        return
+    try:
+        await observer.tick(store.running, store.models)
+    except Exception as exc:  # noqa: BLE001
+        # Observer hatası Ollama'yı offline göstermesin (Mac /slots parse vb.)
+        store.ollama_status = {
+            **health,
+            "observer_error": str(exc),
         }
 
 
@@ -95,7 +103,7 @@ async def lifespan(_app: FastAPI):
             pass
 
 
-app = FastAPI(title="LLMPerf", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="LLMPerf", version="1.2.1", lifespan=lifespan)
 
 
 @app.get("/api/health")
