@@ -87,8 +87,7 @@ class PassiveObserver:
         host = urlparse(settings.ollama_base_url).hostname
         return host or "127.0.0.1"
 
-    @staticmethod
-    def _parse_slots_ports() -> list[int]:
+    def _parse_slots_ports(self) -> list[int]:
         ports: list[int] = []
         raw_parts: list[str] = []
         if settings.slots_ports:
