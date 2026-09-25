@@ -122,34 +122,66 @@ class PassiveObserver:
         return out
 
     async def _probe_slots_port(self, port: int) -> bool:
-        try:
-            async with httpx.AsyncClient(timeout=0.2) as client:
-                resp = await client.get(f"http://{self._slots_host}:{port}/slots")
-                return resp.status_code == 200
-        except Exception:  # noqa: BLE001
+        """Yalnızca gerçek llama.cpp /slots JSON'u kabul et (sahte 200'leri ele)."""
+        slot = await self._fetch_slots(port)
+        if not slot:
             return False
+        return any(
+            k in slot
+            for k in (
+                "is_processing",
+                "processing",
+                "next_token",
+                "n_decoded",
+                "n_prompt_tokens",
+                "id_task",
+                "id_slot",
+            )
+        )
+
+    @staticmethod
+    def _is_embedding_model(name: str) -> bool:
+        low = (name or "").lower()
+        needles = (
+            "embed",
+            "bge-",
+            "e5-",
+            "gte-",
+            "minilm",
+            "nomic-embed",
+            "mxbai-embed",
+            "snowflake-arctic-embed",
+        )
+        return any(n in low for n in needles)
+
+    def _generative_running(self, running: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for m in running:
+            name = m.get("name") or m.get("model") or ""
+            if name and not self._is_embedding_model(name):
+                out.append(m)
+        return out or list(running)
 
     async def _refresh_known_slot_ports(self) -> None:
         """Docker Desktop Mac: /proc'ta runner yokken host /slots portlarını bul."""
         configured = set(self._parse_slots_ports())
-        self._known_slot_ports |= configured
+        to_check = set(self._known_slot_ports) | configured
 
-        # Önce bilinenleri doğrula
         alive: set[int] = set()
-        if self._known_slot_ports:
+        if to_check:
             results = await asyncio.gather(
-                *[self._probe_slots_port(p) for p in self._known_slot_ports]
+                *[self._probe_slots_port(p) for p in to_check]
             )
-            for port, ok in zip(self._known_slot_ports, results):
+            for port, ok in zip(to_check, results):
                 if ok:
                     alive.add(port)
-            self._known_slot_ports = alive | configured
+        # Probe başarısız portları tutma (sahte 200 / ölü port)
+        self._known_slot_ports = alive
 
         if not settings.slots_discover:
             return
 
         now = time.time()
-        # Tam tarama seyrek; model yüklüyken ve port yokken tetikle
         if self._known_slot_ports and now - self._last_slots_scan < 30:
             return
         if now - self._last_slots_scan < 8:
@@ -169,7 +201,6 @@ class PassiveObserver:
                 async with sem:
                     return p if await self._probe_slots_port(p) else None
 
-            # Parça parça tara (UI'yi uzun süre bloklamamak için üst sınır)
             chunk = 400
             found: set[int] = set()
             for base in range(start, end + 1, chunk):
@@ -179,8 +210,8 @@ class PassiveObserver:
                     if hit is not None:
                         found.add(hit)
                 if found:
-                    break  # ilk isabet kümesi yeterli; sonraki tick bilinenleri kullanır
-            self._known_slot_ports |= found | configured
+                    break
+            self._known_slot_ports |= found
 
     def _synthetic_runners_from_ports(self) -> list[ProcSample]:
         runners: list[ProcSample] = []
@@ -328,10 +359,14 @@ class PassiveObserver:
                     port_model[r.port] = match
                     used_models.add(match)
 
+        # Eşlemede embedding modellerini sona bırak (bge-* vb.)
+        gen = self._generative_running(running)
+        pool = gen + [m for m in running if m not in gen]
+
         remaining_ports = [r.port for r in runners if r.port and r.port not in port_model]
         remaining_models = [
             (m.get("name") or m.get("model") or "")
-            for m in running
+            for m in pool
             if (m.get("name") or m.get("model") or "")
             and (m.get("name") or m.get("model") or "") not in used_models
         ]
@@ -339,10 +374,20 @@ class PassiveObserver:
             port_model[port] = model
         if (
             len(remaining_ports) == 1
-            and len(running) == 1
+            and len(gen) == 1
             and remaining_ports[0] not in port_model
         ):
-            only = running[0].get("name") or running[0].get("model")
+            only = gen[0].get("name") or gen[0].get("model")
+            if only:
+                port_model[remaining_ports[0]] = str(only)
+        elif (
+            len(remaining_ports) == 1
+            and len(running) >= 1
+            and remaining_ports[0] not in port_model
+        ):
+            # Tek port → ilk üretken (yoksa ilk) model
+            pick = (gen[0] if gen else running[0])
+            only = pick.get("name") or pick.get("model")
             if only:
                 port_model[remaining_ports[0]] = str(only)
         return port_model
@@ -419,6 +464,10 @@ class PassiveObserver:
         prompt_tokens = self._slot_prompt_tokens(slot)
         task_id = slot.get("id_task")
         now = time.time()
+
+        # Boş/idle slot'larda is_processing true gelebilir (Mac/MLX sahte pozitif)
+        if processing and decoded <= 0 and prompt_tokens <= 0:
+            processing = False
 
         meta["prompt_tokens"] = prompt_tokens
         meta["slot_processing"] = processing
@@ -580,17 +629,34 @@ class PassiveObserver:
                     model = str(slot_meta["model_hint"])
 
             slot_processing = bool(slot_meta.get("slot_processing"))
-            inferring = slot_processing
+            # Metrik yokken inferring gösterme (sahte unknown kartı)
+            has_signal = bool(
+                slot_meta.get("live_tps")
+                or slot_meta.get("avg_tps")
+                or (slot_meta.get("tokens") or 0) > 0
+                or (slot_meta.get("prompt_tokens") or 0) > 0
+            )
+            inferring = slot_processing and has_signal
             busy = (not inferring) and (r.cpu_raw >= settings.runner_cpu_active_pct)
             if inferring:
                 status = "inferring"
             elif busy:
                 status = "busy"
+            elif slot_processing and not has_signal:
+                status = "loaded"
             else:
                 status = "loaded"
 
+            # Anlamsız synthetic unknown satırını atla — /api/ps resident kartları yeterli
+            if (
+                (not model or model == "unknown")
+                and not inferring
+                and (not r.pid or r.pid == 0)
+            ):
+                continue
+
             row = {
-                "pid": r.pid or None,
+                "pid": r.pid if r.pid else None,
                 "model": model,
                 "blob_sha": (r.blob_sha or "")[:12],
                 "cpu_pct": r.cpu_pct,
@@ -598,13 +664,13 @@ class PassiveObserver:
                 "rss_bytes": r.rss_bytes,
                 "port": r.port,
                 "inferring": inferring,
-                "slot_processing": slot_processing,
+                "slot_processing": bool(inferring),
                 "status": status,
-                "live_tps": slot_meta.get("live_tps") if slot_processing else None,
-                "avg_tps": slot_meta.get("avg_tps") if slot_processing else None,
-                "tokens": (slot_meta.get("tokens") or 0) if slot_processing else 0,
+                "live_tps": slot_meta.get("live_tps") if inferring else None,
+                "avg_tps": slot_meta.get("avg_tps") if inferring else None,
+                "tokens": (slot_meta.get("tokens") or 0) if inferring else 0,
                 "prompt_tokens": slot_meta.get("prompt_tokens") or 0,
-                "agent": slot_meta.get("agent") if slot_processing else None,
+                "agent": slot_meta.get("agent") if inferring else None,
             }
             observed.append(row)
             if model and model != "unknown":

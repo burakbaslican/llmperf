@@ -103,7 +103,7 @@ async def lifespan(_app: FastAPI):
             pass
 
 
-app = FastAPI(title="LLMPerf", version="1.2.1", lifespan=lifespan)
+app = FastAPI(title="LLMPerf", version="1.2.2", lifespan=lifespan)
 
 
 @app.get("/api/health")

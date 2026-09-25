@@ -4,33 +4,33 @@ Yerel Ollama performansını (token/s, ajanlar, GPU) canlı izleyen web paneli.
 
 ## GitHub Release’ten kurulum
 
-Repo: https://github.com/burakbaslican/llmperf/releases/tag/v1.2.1  
+Repo: https://github.com/burakbaslican/llmperf/releases/tag/v1.2.2  
 (Private repo → `gh auth login` gerekli — public ise doğrudan indirilebilir.)
 
 ### Mac M2 Ultra — Docker Desktop (önerilen)
 
 ```bash
-gh release download v1.2.1 -R burakbaslican/llmperf -p 'llmperf-docker-mac-arm64-1.2.1.tar.gz' \
-  && tar -xzf llmperf-docker-mac-arm64-1.2.1.tar.gz \
-  && cd llmperf-docker-mac-arm64-1.2.1 \
+gh release download v1.2.2 -R burakbaslican/llmperf -p 'llmperf-docker-mac-arm64-1.2.2.tar.gz' \
+  && tar -xzf llmperf-docker-mac-arm64-1.2.2.tar.gz \
+  && cd llmperf-docker-mac-arm64-1.2.2 \
   && ./install-docker-mac.sh up
 ```
 
 ### Mac M2 Ultra — native Python
 
 ```bash
-gh release download v1.2.1 -R burakbaslican/llmperf -p 'llmperf-mac-arm64-1.2.1.tar.gz' \
-  && tar -xzf llmperf-mac-arm64-1.2.1.tar.gz \
-  && cd llmperf-mac-arm64-1.2.1 \
+gh release download v1.2.2 -R burakbaslican/llmperf -p 'llmperf-mac-arm64-1.2.2.tar.gz' \
+  && tar -xzf llmperf-mac-arm64-1.2.2.tar.gz \
+  && cd llmperf-mac-arm64-1.2.2 \
   && ./install-mac.sh up
 ```
 
 ### Linux — Docker
 
 ```bash
-gh release download v1.2.1 -R burakbaslican/llmperf -p 'llmperf-1.2.1.tar.gz' \
-  && tar -xzf llmperf-1.2.1.tar.gz \
-  && cd llmperf-1.2.1 \
+gh release download v1.2.2 -R burakbaslican/llmperf -p 'llmperf-1.2.2.tar.gz' \
+  && tar -xzf llmperf-1.2.2.tar.gz \
+  && cd llmperf-1.2.2 \
   && ./install.sh up
 ```
 
@@ -119,14 +119,14 @@ LLMPERF_OLLAMA_BASE_URL=http://127.0.0.1:11434 \
 ## Paket üretimi
 
 ```bash
-./scripts/package.sh 1.2.1
-# → dist/llmperf-1.2.1.tar.gz                 (Linux / Docker)
+./scripts/package.sh 1.2.2
+# → dist/llmperf-1.2.2.tar.gz                 (Linux / Docker)
 
-./scripts/package-docker-mac.sh 1.2.1
-# → dist/llmperf-docker-mac-arm64-1.2.1.tar.gz (Mac Docker Desktop)
+./scripts/package-docker-mac.sh 1.2.2
+# → dist/llmperf-docker-mac-arm64-1.2.2.tar.gz (Mac Docker Desktop)
 
-./scripts/package-mac.sh 1.2.1
-# → dist/llmperf-mac-arm64-1.2.1.tar.gz        (Mac native Python)
+./scripts/package-mac.sh 1.2.2
+# → dist/llmperf-mac-arm64-1.2.2.tar.gz        (Mac native Python)
 ```
 
 ## Ne izler?

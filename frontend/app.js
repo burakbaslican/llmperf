@@ -346,11 +346,12 @@
         const status = o.inferring ? "inferring" : o.status || "loaded";
         const tps = o.avg_tps ?? o.live_tps;
         const ttl = o.expires_in_sec != null ? ` · ttl ${fmtNum(o.expires_in_sec, 0)}s` : "";
-        const pid = o.pid != null ? `pid ${o.pid}` : "resident";
+        const pid = o.pid != null && o.pid > 0 ? `pid ${o.pid}` : "resident";
+        const tpsLabel = o.inferring && tps != null ? `${fmtNum(tps)} t/s` : "—";
         return `<article class="session-card" data-status="${status}">
           <div class="session-top">
             <span class="session-agent">${o.agent ? `${o.agent} · ` : ""}${o.model || "?"}</span>
-            <span class="session-tps">${o.inferring ? fmtNum(tps) + " t/s" : "—"}</span>
+            <span class="session-tps">${tpsLabel}</span>
           </div>
           <div class="session-meta">${status} · ${o.tokens || 0} tok · ${pid}${ttl}</div>
           <div class="session-partial">cpu ${fmtNum(o.cpu_pct, 1)}% · ${fmtBytes(o.size_vram || o.rss_bytes)}</div>
