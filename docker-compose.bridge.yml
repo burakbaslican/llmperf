@@ -1,0 +1,21 @@
+# Alternatif: bridge ağ (macOS / Docker Desktop).
+# Linux'ta host compose tercih edilir (tok/s için /slots gerekir).
+services:
+  llmperf:
+    build: .
+    image: llmperf:latest
+    container_name: llmperf
+    ports:
+      - "${LLMPERF_PORT:-8080}:8080"
+    environment:
+      LLMPERF_OLLAMA_BASE_URL: ${LLMPERF_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      LLMPERF_SLOTS_HOST: ${LLMPERF_SLOTS_HOST:-host.docker.internal}
+      LLMPERF_POLL_INTERVAL_SEC: ${LLMPERF_POLL_INTERVAL_SEC:-0.4}
+      LLMPERF_PROC_ROOT: /host/proc
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys/class/drm:/sys/class/drm:ro
+    restart: unless-stopped

@@ -1,0 +1,12 @@
+# build context
+.git
+.venv
+__pycache__
+*.pyc
+.env
+*.tar.gz
+dist/
+*.md
+!README.md
+.cursor
+agent-transcripts

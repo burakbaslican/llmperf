@@ -1,0 +1,18 @@
+# LLMPerf — Linux host üzerinde Ollama ile birlikte çalışacak şekilde ayarlıdır.
+# network_mode: host → llama-server /slots ve 11434 doğrudan erişilir.
+services:
+  llmperf:
+    build: .
+    image: llmperf:latest
+    container_name: llmperf
+    network_mode: host
+    pid: host
+    environment:
+      LLMPERF_OLLAMA_BASE_URL: ${LLMPERF_OLLAMA_BASE_URL:-http://127.0.0.1:11434}
+      LLMPERF_POLL_INTERVAL_SEC: ${LLMPERF_POLL_INTERVAL_SEC:-0.4}
+      LLMPERF_PROC_ROOT: ${LLMPERF_PROC_ROOT:-/proc}
+      LLMPERF_RUNNER_CPU_ACTIVE_PCT: ${LLMPERF_RUNNER_CPU_ACTIVE_PCT:-8}
+    volumes:
+      # AMD/Intel GPU kullanımı (sysfs)
+      - /sys/class/drm:/sys/class/drm:ro
+    restart: unless-stopped

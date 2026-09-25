@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+*.egg-info/
+.pytest_cache/
+dist/
+*.tar.gz
+.llmperf-slots-ports
+.llmperf.pid
+.llmperf.log
+.llmperf-ports-watch.pid
