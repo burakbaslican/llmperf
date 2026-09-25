@@ -103,7 +103,7 @@ async def lifespan(_app: FastAPI):
             pass
 
 
-app = FastAPI(title="LLMPerf", version="1.2.3", lifespan=lifespan)
+app = FastAPI(title="LLMPerf", version="1.2.4", lifespan=lifespan)
 
 
 @app.get("/api/health")
@@ -152,6 +152,25 @@ async def api_benchmark(req: BenchRequest):
         return await _run_benchmark(req)
 
 
+def _chunk_text(chunk: dict[str, Any]) -> str:
+    """Ollama generate/chat stream parçasından metin çıkar (MLX uyumlu)."""
+    if not isinstance(chunk, dict):
+        return ""
+    text = chunk.get("response")
+    if isinstance(text, str) and text:
+        return text
+    msg = chunk.get("message")
+    if isinstance(msg, dict):
+        content = msg.get("content")
+        if isinstance(content, str) and content:
+            return content
+    for key in ("content", "text", "output"):
+        val = chunk.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return ""
+
+
 async def _run_benchmark(req: BenchRequest) -> dict[str, Any]:
     started = time.perf_counter()
     first_token_at: float | None = None
@@ -179,7 +198,7 @@ async def _run_benchmark(req: BenchRequest) -> dict[str, Any]:
             },
         ):
             chunk = json.loads(raw)
-            piece = chunk.get("response") or ""
+            piece = _chunk_text(chunk)
             if piece:
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
@@ -192,17 +211,26 @@ async def _run_benchmark(req: BenchRequest) -> dict[str, Any]:
             live_tps = (
                 round(token_count / gen_elapsed, 2) if first_token_at and gen_elapsed > 0 else None
             )
+            full = "".join(response_text)
             store.update_session(
                 sid,
                 tokens=token_count,
                 elapsed_ms=round(elapsed_ms, 1),
                 live_tps=live_tps,
-                partial="".join(response_text)[-400:],
+                partial=full,
             )
             await broadcast(False)
 
             if chunk.get("done"):
                 final = chunk
+                # Bazı modeller metni yalnızca son chunk'ta bırakır
+                tail = _chunk_text(chunk)
+                if tail and (not response_text or response_text[-1] != tail):
+                    # son chunk'ta full text gelebilir; tekrar ekleme
+                    if not full and tail:
+                        response_text.append(tail)
+                        full = tail
+                        store.update_session(sid, partial=full, tokens=max(token_count, 1))
                 break
     except Exception as exc:  # noqa: BLE001
         store.finish_session(sid, error=str(exc))
@@ -226,10 +254,14 @@ async def _run_benchmark(req: BenchRequest) -> dict[str, Any]:
         metrics.completion_tokens = token_count
         metrics.total_tokens = metrics.prompt_tokens + token_count
 
+    full_response = "".join(response_text)
     store.finish_session(sid, metrics)
     await refresh_ollama_state()
+    # refresh _sync_live çağırır; cevabı live'da tut (WS UI'yi boşaltmasın)
+    store.live["last_response"] = full_response
+    store.live["last_response_model"] = req.model
     await broadcast(True)
-    return {"metrics": metrics.to_dict(), "response": "".join(response_text)}
+    return {"metrics": metrics.to_dict(), "response": full_response}
 
 
 @app.websocket("/ws")

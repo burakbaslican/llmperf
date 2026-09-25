@@ -418,9 +418,20 @@
     const live = snapshot.live || {};
     const bench = (snapshot.sessions || []).find((s) => s.source === "benchmark");
     if (bench) {
-      els.streamOut.textContent = bench.partial || "";
+      // Canlı ölçüm: partial'ı göster (boş partial mevcut metni silmesin)
+      if (bench.partial) {
+        els.streamOut.textContent = bench.partial;
+      }
       els.streamTokens.textContent = `${bench.tokens || 0} tok`;
       els.streamMeta.textContent = `ölçüm · ${bench.model || ""} · ${fmtNum(bench.live_tps)} t/s`;
+    } else if (running) {
+      // HTTP henüz bitmedi — WS ile kutuyu temizleme
+      return;
+    } else if (live.last_response) {
+      els.streamOut.textContent = live.last_response;
+      if (live.last_response_model) {
+        els.streamMeta.textContent = `bitti · ${live.last_response_model}`;
+      }
     } else if (live.status === "running") {
       els.streamMeta.textContent = `canlı · ${live.agent || ""} · ${live.model || ""} · ${fmtNum(live.live_tps)} t/s`;
       els.streamTokens.textContent = `${live.tokens || 0} tok`;
@@ -567,8 +578,15 @@
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || res.statusText);
-      els.streamOut.textContent = data.response || "";
+      if (!res.ok) {
+        const detail = data.detail;
+        const msg = Array.isArray(detail)
+          ? detail.map((d) => d.msg || JSON.stringify(d)).join("; ")
+          : detail || res.statusText;
+        throw new Error(msg);
+      }
+      const text = data.response || "";
+      els.streamOut.textContent = text || "(model boş yanıt döndü)";
       els.streamMeta.textContent = `bitti · ${model}`;
       els.streamTokens.textContent = `${data.metrics?.completion_tokens ?? 0} tok`;
     } catch (err) {

@@ -384,10 +384,21 @@ main {
   display: grid;
   grid-template-columns: 1.05fr 1fr;
   gap: 1.1rem;
+  align-items: start;
 }
 
 .layout.twin {
   grid-template-columns: 1fr 1fr;
+}
+
+.layout > .panel {
+  align-self: start;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* transform animasyonu grid hizasını bozabiliyor */
+  animation: fade-in 0.55s ease both;
 }
 
 .panel {
@@ -400,16 +411,42 @@ main {
   animation: rise 0.8s ease both;
 }
 
+.panel-head {
+  flex: 0 0 auto;
+  min-height: 3.35rem;
+}
+
 .panel-head h2 {
   margin: 0;
   font-size: 1.05rem;
   letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
 .panel-head p {
-  margin: 0.25rem 0 1rem;
+  margin: 0.25rem 0 0;
   color: var(--muted);
   font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.panel-head + *,
+.panel-head-row + * {
+  margin-top: 0.85rem;
+}
+
+.layout > .panel > .field,
+.layout > .panel > .row,
+.layout > .panel > .actions,
+.layout > .panel > .stream-box,
+.layout > .panel > .chart-wrap,
+.layout > .panel > .table-wrap,
+.layout > .panel > .sessions-grid {
+  margin-top: 0.85rem;
+}
+
+.chart-panel .chart-wrap {
+  flex: 1 1 auto;
 }
 
 .panel-head-row {
@@ -421,7 +458,7 @@ main {
 }
 
 .panel-head-row > div p {
-  margin-bottom: 0.75rem;
+  margin-bottom: 0;
 }
 
 .window-field {
@@ -643,6 +680,8 @@ input:focus, select:focus, textarea:focus {
   border-radius: 14px;
   overflow: hidden;
   background: rgba(26, 33, 24, 0.03);
+  flex: 0 0 auto;
+  min-height: 160px;
 }
 
 .stream-meta {
@@ -659,13 +698,15 @@ input:focus, select:focus, textarea:focus {
   margin: 0;
   padding: 0.85rem 0.9rem;
   min-height: 120px;
-  max-height: 220px;
+  max-height: 280px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--mono);
   font-size: 0.8rem;
   line-height: 1.5;
+  color: var(--ink);
+  background: transparent;
 }
 
 .chart-wrap {
@@ -840,6 +881,15 @@ footer {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 
