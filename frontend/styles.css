@@ -50,11 +50,13 @@ body > * {
 }
 
 .top {
+  width: min(1280px, 100%);
+  margin: 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1.4rem clamp(1rem, 3vw, 2.5rem) 0.5rem;
+  padding: 1.4rem clamp(1rem, 3vw, 2rem) 0.5rem;
   animation: rise 0.6s ease both;
 }
 
@@ -139,9 +141,12 @@ body > * {
 }
 
 main {
-  padding: 1rem clamp(1rem, 3vw, 2.5rem) 3rem;
-  display: grid;
-  gap: 1.1rem;
+  width: min(1280px, 100%);
+  margin: 0 auto;
+  padding: 1rem clamp(1rem, 3vw, 2rem) 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
 .hero-metrics {
@@ -211,10 +216,12 @@ main {
 
 .sessions-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 0.75rem;
-  margin-bottom: 0.9rem;
-  min-height: 2rem;
+  width: 100%;
+  flex: 1 1 auto;
+  align-content: start;
+  min-height: 4rem;
 }
 
 .session-card {
@@ -382,23 +389,29 @@ main {
 
 .layout {
   display: grid;
-  grid-template-columns: 1.05fr 1fr;
-  gap: 1.1rem;
-  align-items: start;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: stretch;
 }
 
-.layout.twin {
+.layout.twin,
+.layout.layout-bench,
+.layout.layout-models {
   grid-template-columns: 1fr 1fr;
 }
 
+.layout.layout-runners {
+  grid-template-columns: 1.4fr 0.85fr;
+}
+
 .layout > .panel {
-  align-self: start;
+  align-self: stretch;
   width: 100%;
   min-width: 0;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
-  /* transform animasyonu grid hizasını bozabiliyor */
-  animation: fade-in 0.55s ease both;
+  animation: fade-in 0.45s ease both;
 }
 
 .panel {
@@ -413,7 +426,7 @@ main {
 
 .panel-head {
   flex: 0 0 auto;
-  min-height: 3.35rem;
+  min-height: 3.2rem;
 }
 
 .panel-head h2 {
@@ -445,8 +458,21 @@ main {
   margin-top: 0.85rem;
 }
 
-.chart-panel .chart-wrap {
+.panel-body-fill {
   flex: 1 1 auto;
+  min-height: 8rem;
+}
+
+.chart-panel .chart-wrap {
+  flex: 0 0 auto;
+  height: 180px;
+  margin-bottom: 0.75rem;
+}
+
+.chart-panel .chart-wrap.secondary {
+  height: 140px;
+  margin-bottom: 0;
+  opacity: 0.95;
 }
 
 .panel-head-row {
@@ -637,7 +663,51 @@ input:focus, select:focus, textarea:focus {
 .actions {
   display: flex;
   gap: 0.6rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0;
+  flex: 0 0 auto;
+}
+
+.stream-box {
+  border: 1px dashed rgba(26, 33, 24, 0.18);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(26, 33, 24, 0.03);
+  flex: 1 1 auto;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+}
+
+.stream-meta {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.55rem 0.75rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+#streamOut {
+  margin: 0;
+  padding: 0.85rem 0.9rem;
+  flex: 1 1 auto;
+  min-height: 140px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--ink);
+  background: transparent;
+}
+
+#streamOut:empty::before {
+  content: "Ölç’e basınca model yanıtı burada görünür…";
+  color: var(--muted);
 }
 
 .btn {
@@ -672,40 +742,6 @@ input:focus, select:focus, textarea:focus {
 }
 
 .btn.ghost {
-  background: transparent;
-}
-
-.stream-box {
-  border: 1px dashed rgba(26, 33, 24, 0.18);
-  border-radius: 14px;
-  overflow: hidden;
-  background: rgba(26, 33, 24, 0.03);
-  flex: 0 0 auto;
-  min-height: 160px;
-}
-
-.stream-meta {
-  display: flex;
-  justify-content: space-between;
-  padding: 0.55rem 0.75rem;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-}
-
-#streamOut {
-  margin: 0;
-  padding: 0.85rem 0.9rem;
-  min-height: 120px;
-  max-height: 280px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  line-height: 1.5;
-  color: var(--ink);
   background: transparent;
 }
 
@@ -863,14 +899,61 @@ td.mono {
   font-family: var(--mono);
 }
 
-footer {
-  display: flex;
-  justify-content: space-between;
+footer,
+.site-footer {
+  width: min(1280px, 100%);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
   gap: 1rem;
-  padding: 0 clamp(1rem, 3vw, 2.5rem) 1.5rem;
+  padding: 0.75rem clamp(1rem, 3vw, 2rem) 1.75rem;
   color: var(--muted);
   font-family: var(--mono);
   font-size: 0.75rem;
+}
+
+.site-footer > span:first-child {
+  justify-self: start;
+}
+
+.footer-version {
+  justify-self: center;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-solid);
+  color: var(--ink);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.site-footer > #wsState {
+  justify-self: end;
+}
+
+@media (max-width: 980px) {
+  .hero-metrics,
+  .layout,
+  .layout.twin,
+  .layout.layout-runners,
+  .layout.layout-bench,
+  .layout.layout-models {
+    grid-template-columns: 1fr;
+  }
+
+  footer,
+  .site-footer {
+    grid-template-columns: 1fr;
+    text-align: center;
+    gap: 0.45rem;
+  }
+
+  .site-footer > span:first-child,
+  .footer-version,
+  .site-footer > #wsState {
+    justify-self: center;
+  }
 }
 
 @keyframes rise {
@@ -896,13 +979,5 @@ footer {
 @keyframes spin-slow {
   to {
     transform: rotate(360deg);
-  }
-}
-
-@media (max-width: 980px) {
-  .hero-metrics,
-  .layout,
-  .layout.twin {
-    grid-template-columns: 1fr;
   }
 }

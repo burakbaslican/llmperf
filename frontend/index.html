@@ -77,7 +77,7 @@
       <div class="agent-tps-bars" id="agentTpsBars"></div>
     </section>
 
-    <div class="layout twin">
+    <div class="layout twin layout-runners">
       <section class="panel">
         <header class="panel-head">
           <h2>Gözlenen runner’lar</h2>
@@ -90,7 +90,7 @@
           <h2>Bağlı istemciler</h2>
           <p>11434 portuna TCP bağlantısı olan süreçler (ajan adayı).</p>
         </header>
-        <div class="table-wrap">
+        <div class="table-wrap panel-body-fill">
           <table>
             <thead>
               <tr>
@@ -106,7 +106,7 @@
       </section>
     </div>
 
-    <div class="layout">
+    <div class="layout layout-bench">
       <section class="panel control">
         <header class="panel-head">
           <h2>Benchmark (ölçüm)</h2>
@@ -162,13 +162,13 @@
       </section>
     </div>
 
-    <div class="layout twin">
+    <div class="layout twin layout-models">
       <section class="panel">
         <header class="panel-head">
           <h2>Yüklü modeller</h2>
           <p id="modelCount">—</p>
         </header>
-        <div class="table-wrap">
+        <div class="table-wrap panel-body-fill table-wrap-scroll">
           <table>
             <thead>
               <tr>
@@ -188,7 +188,7 @@
           <h2>Bellekte (/api/ps)</h2>
           <p id="runningCount">—</p>
         </header>
-        <div class="table-wrap">
+        <div class="table-wrap panel-body-fill table-wrap-scroll">
           <table>
             <thead>
               <tr>
@@ -228,8 +228,9 @@
     </section>
   </main>
 
-  <footer>
+  <footer class="site-footer">
     <span>LLMPerf · yerel Ollama izleyici</span>
+    <span class="footer-version" id="appVersion">v1.2.5</span>
     <span id="wsState">ws: —</span>
   </footer>
 </body>

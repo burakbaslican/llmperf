@@ -33,6 +33,7 @@
     observedGrid: $("observedGrid"),
     clientsBody: $("clientsBody"),
     wsState: $("wsState"),
+    appVersion: $("appVersion"),
   };
 
   let tpsChart;
@@ -508,6 +509,9 @@
   }
 
   function applySnapshot(snapshot) {
+    if (snapshot.version && els.appVersion) {
+      els.appVersion.textContent = `v${String(snapshot.version).replace(/^v/, "")}`;
+    }
     setOllamaStatus(snapshot.ollama);
     fillModels(snapshot.models);
     fillRunning(snapshot.running);

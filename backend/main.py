@@ -103,7 +103,8 @@ async def lifespan(_app: FastAPI):
             pass
 
 
-app = FastAPI(title="LLMPerf", version="1.2.4", lifespan=lifespan)
+app = FastAPI(title="LLMPerf", version="1.2.5", lifespan=lifespan)
+APP_VERSION = "1.2.5"
 
 
 @app.get("/api/health")
@@ -111,6 +112,7 @@ async def api_health():
     await refresh_ollama_state()
     return {
         "app": "ok",
+        "version": APP_VERSION,
         "mode": "passive",
         "ollama": store.ollama_status,
         "active_observed": sum(1 for o in store.observed if o.get("inferring")),
