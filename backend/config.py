@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     runner_cpu_active_pct: float = 8.0
     # /slots yokken (MLX ollama runner) bu CPU üstü → inferring
     runner_cpu_infer_pct: float = 18.0
+    # Host tahmini tok/s (geçmiş yoksa model ailesi)
+    host_infer_tps_fast: float = 55.0
+    host_infer_tps_mid: float = 32.0
+    host_infer_tps_slow: float = 18.0
     # expires_at ileri kayarsa kullanım nabzı
     expires_skew_sec: float = 1.0
     # llama-server /slots host (boşsa ollama_base_url hostname)

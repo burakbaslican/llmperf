@@ -4,33 +4,33 @@ Yerel Ollama performansını (token/s, ajanlar, GPU) canlı izleyen web paneli.
 
 ## GitHub Release’ten kurulum
 
-Repo: https://github.com/burakbaslican/llmperf/releases/tag/v1.2.9  
+Repo: https://github.com/burakbaslican/llmperf/releases/tag/v1.3.0  
 (Private repo → `gh auth login` gerekli — public ise doğrudan indirilebilir.)
 
 ### Mac M2 Ultra — Docker Desktop (önerilen)
 
 ```bash
-gh release download v1.2.9 -R burakbaslican/llmperf -p 'llmperf-docker-mac-arm64-1.2.9.tar.gz' \
-  && tar -xzf llmperf-docker-mac-arm64-1.2.9.tar.gz \
-  && cd llmperf-docker-mac-arm64-1.2.9 \
+gh release download v1.3.0 -R burakbaslican/llmperf -p 'llmperf-docker-mac-arm64-1.3.0.tar.gz' \
+  && tar -xzf llmperf-docker-mac-arm64-1.3.0.tar.gz \
+  && cd llmperf-docker-mac-arm64-1.3.0 \
   && ./install-docker-mac.sh up
 ```
 
 ### Mac M2 Ultra — native Python
 
 ```bash
-gh release download v1.2.9 -R burakbaslican/llmperf -p 'llmperf-mac-arm64-1.2.9.tar.gz' \
-  && tar -xzf llmperf-mac-arm64-1.2.9.tar.gz \
-  && cd llmperf-mac-arm64-1.2.9 \
+gh release download v1.3.0 -R burakbaslican/llmperf -p 'llmperf-mac-arm64-1.3.0.tar.gz' \
+  && tar -xzf llmperf-mac-arm64-1.3.0.tar.gz \
+  && cd llmperf-mac-arm64-1.3.0 \
   && ./install-mac.sh up
 ```
 
 ### Linux — Docker
 
 ```bash
-gh release download v1.2.9 -R burakbaslican/llmperf -p 'llmperf-1.2.9.tar.gz' \
-  && tar -xzf llmperf-1.2.9.tar.gz \
-  && cd llmperf-1.2.9 \
+gh release download v1.3.0 -R burakbaslican/llmperf -p 'llmperf-1.3.0.tar.gz' \
+  && tar -xzf llmperf-1.3.0.tar.gz \
+  && cd llmperf-1.3.0 \
   && ./install.sh up
 ```
 
@@ -73,6 +73,8 @@ veya kaynak ağacında:
 Panel: **http://127.0.0.1:8080** · image: `llmperf:mac-arm64`
 
 Host’taki Ollama’ya `host.docker.internal` ile bağlanır; `/slots` portları host izleyici ile güncellenir.
+MLX modellerinde `/slots` yoksa tok/s **CPU+GPU’dan tahmini** üretilir (panelde `≈` / `observed≈`); bitişte history’e yazılır.
+GPU% için host’ta `mactop` gerekir: `brew install mactop`.
 
 ### macOS native (Docker’sız)
 
@@ -119,14 +121,14 @@ LLMPERF_OLLAMA_BASE_URL=http://127.0.0.1:11434 \
 ## Paket üretimi
 
 ```bash
-./scripts/package.sh 1.2.9
-# → dist/llmperf-1.2.9.tar.gz                 (Linux / Docker)
+./scripts/package.sh 1.3.0
+# → dist/llmperf-1.3.0.tar.gz                 (Linux / Docker)
 
-./scripts/package-docker-mac.sh 1.2.9
-# → dist/llmperf-docker-mac-arm64-1.2.9.tar.gz (Mac Docker Desktop)
+./scripts/package-docker-mac.sh 1.3.0
+# → dist/llmperf-docker-mac-arm64-1.3.0.tar.gz (Mac Docker Desktop)
 
-./scripts/package-mac.sh 1.2.9
-# → dist/llmperf-mac-arm64-1.2.9.tar.gz        (Mac native Python)
+./scripts/package-mac.sh 1.3.0
+# → dist/llmperf-mac-arm64-1.3.0.tar.gz        (Mac native Python)
 ```
 
 ## Ne izler?

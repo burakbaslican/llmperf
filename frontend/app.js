@@ -350,18 +350,26 @@
         const tps = o.avg_tps ?? o.live_tps;
         const ttl = o.expires_in_sec != null ? ` · ttl ${fmtNum(o.expires_in_sec, 0)}s` : "";
         const pid = o.pid != null && o.pid > 0 ? `pid ${o.pid}` : "resident";
+        const est = o.estimated || o.metric_source === "host-est";
         let tpsLabel = "—";
-        if (tps != null) tpsLabel = `${fmtNum(tps)} t/s`;
-        else if (o.inferring && (o.cpu_raw != null || o.cpu_pct != null)) {
+        if (tps != null) tpsLabel = `${fmtNum(tps)} t/s${est ? " ≈" : ""}`;
+        else if (o.inferring && o.gpu_util_pct != null) {
+          tpsLabel = `gpu ${fmtNum(o.gpu_util_pct, 0)}%`;
+        } else if (o.inferring && (o.cpu_raw != null || o.cpu_pct != null)) {
           tpsLabel = `cpu ${fmtNum(o.cpu_raw ?? o.cpu_pct, 0)}%`;
         }
+        const src = o.metric_source
+          ? ` · ${o.metric_source === "host-est" ? "tahmini" : o.metric_source}`
+          : "";
+        const gpuPart =
+          o.gpu_util_pct != null ? ` · gpu ${fmtNum(o.gpu_util_pct, 0)}%` : "";
         return `<article class="session-card" data-status="${status}">
           <div class="session-top">
             <span class="session-agent">${o.agent ? `${o.agent} · ` : ""}${o.model || "?"}</span>
             <span class="session-tps">${tpsLabel}</span>
           </div>
-          <div class="session-meta">${status} · ${o.tokens || 0} tok · ${pid}${ttl}</div>
-          <div class="session-partial">cpu ${fmtNum(o.cpu_pct, 1)}% · ${fmtBytes(o.size_vram || o.rss_bytes)}</div>
+          <div class="session-meta">${status} · ${o.tokens || 0} tok · ${pid}${ttl}${src}</div>
+          <div class="session-partial">cpu ${fmtNum(o.cpu_pct, 1)}%${gpuPart} · ${fmtBytes(o.size_vram || o.rss_bytes)}</div>
         </article>`;
       })
       .join("");
@@ -419,8 +427,8 @@
         <td>${h.model}</td>
         <td class="mono">${h.prompt_tokens ?? "—"}</td>
         <td class="mono">${h.completion_tokens ?? "—"}</td>
-        <td class="mono">${fmtNum(h.completion_tps)}</td>
-        <td class="mono">${h.source || "—"}</td>
+        <td class="mono">${fmtNum(h.completion_tps)}${h.endpoint === "host-infer" || h.client === "host-obs" ? " ≈" : ""}</td>
+        <td class="mono">${h.endpoint === "host-infer" ? "observed≈" : (h.source || "—")}</td>
         <td class="mono">${fmtNum(h.wall_ms, 0)} ms</td>
       </tr>`)
       .join("") || `<tr><td colspan="8">Henüz ölçüm yok</td></tr>`;
@@ -445,7 +453,9 @@
         els.streamMeta.textContent = `bitti · ${live.last_response_model}`;
       }
     } else if (live.status === "running") {
-      const tpsPart = live.live_tps != null ? `${fmtNum(live.live_tps)} t/s` : (live.partial || "aktif");
+      const tpsPart = live.live_tps != null
+        ? `${fmtNum(live.live_tps)} t/s${live.estimated ? " ≈" : ""}`
+        : (live.partial || "aktif");
       els.streamMeta.textContent = `canlı · ${live.agent || ""} · ${live.model || ""} · ${tpsPart}`;
       els.streamTokens.textContent = `${live.tokens || 0} tok`;
     }

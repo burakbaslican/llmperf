@@ -328,6 +328,8 @@ class MetricsStore:
                     "partial": " · ".join(str(p) for p in parts if p),
                     "agent": best.get("agent") or "external",
                     "active_agents": sorted(agent_tps.keys()),
+                    "estimated": bool(best.get("estimated")),
+                    "metric_source": best.get("metric_source"),
                 }
             )
             return
@@ -339,6 +341,8 @@ class MetricsStore:
         self.live["partial"] = ""
         self.live["model"] = None
         self.live["agent"] = None
+        self.live["estimated"] = False
+        self.live["metric_source"] = None
 
     def should_broadcast(self, min_interval_ms: float) -> bool:
         now = time.perf_counter()
@@ -352,7 +356,7 @@ class MetricsStore:
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            "version": "1.2.9",
+            "version": "1.3.0",
             "ollama": self.ollama_status,
             "models": self.models,
             "running": self.running,

@@ -54,6 +54,37 @@ class _SlotTrack:
         self.agent = "external"
 
 
+class _HostInferTrack:
+    """MLX /slots yokken host CPU+GPU ile üretim takibi."""
+
+    __slots__ = (
+        "active",
+        "start_ts",
+        "last_ts",
+        "agent",
+        "est_tokens",
+        "live_tps",
+        "avg_tps",
+        "peak_cpu",
+        "peak_gpu",
+        "samples",
+        "tps_sum",
+    )
+
+    def __init__(self) -> None:
+        self.active = False
+        self.start_ts = 0.0
+        self.last_ts = 0.0
+        self.agent = "external"
+        self.est_tokens = 0
+        self.live_tps: float | None = None
+        self.avg_tps: float | None = None
+        self.peak_cpu = 0.0
+        self.peak_gpu = 0.0
+        self.samples = 0
+        self.tps_sum = 0.0
+
+
 NOISE_AGENTS = frozenset({"llmperf", "uvicorn", "unknown", "?", "ollama-serve", "ollama-runner"})
 GENERIC_AGENTS = frozenset({"python", "node", "java", "external", "remote"})
 CLIENT_TTL_SEC = 20.0
@@ -76,6 +107,7 @@ class PassiveObserver:
         self._scan_lock = asyncio.Lock()
         self._model_pulse_until: dict[str, float] = {}
         self._client_ttl: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._host_inf: dict[str, _HostInferTrack] = {}
 
     @staticmethod
     def _port_from_url(url: str) -> int:
@@ -583,6 +615,142 @@ class PassiveObserver:
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored[0][2]
 
+    def _baseline_tps(self, model: str) -> float:
+        """Geçmiş ölçüm veya model ailesine göre tok/s tabanı (/slots yokken)."""
+        rates: list[float] = []
+        for h in self.store.history:
+            if (h.get("model") or "") != model:
+                continue
+            tps = h.get("completion_tps")
+            try:
+                v = float(tps) if tps is not None else 0.0
+            except (TypeError, ValueError):
+                v = 0.0
+            if v > 0:
+                rates.append(v)
+            if len(rates) >= 8:
+                break
+        if rates:
+            rates.sort()
+            return rates[len(rates) // 2]
+        low = (model or "").lower()
+        if "fast" in low or "4b" in low:
+            return float(settings.host_infer_tps_fast)
+        if "9b" in low or "8b" in low:
+            return float(settings.host_infer_tps_mid)
+        if "27b" in low or "32b" in low or "70b" in low:
+            return float(settings.host_infer_tps_slow)
+        return float(settings.host_infer_tps_mid)
+
+    def _update_host_infer(
+        self,
+        *,
+        model: str,
+        inferring: bool,
+        clients: list[dict[str, Any]],
+        cpu_raw: float,
+        gpu_util: float,
+    ) -> dict[str, Any]:
+        """MLX runner için canlı tok/s tahmini + bitişte history kaydı."""
+        meta: dict[str, Any] = {
+            "live_tps": None,
+            "avg_tps": None,
+            "tokens": 0,
+            "agent": None,
+            "estimated": False,
+        }
+        if not model or model == "unknown" or self._is_embedding_model(model):
+            return meta
+
+        now = time.time()
+        track = self._host_inf.get(model)
+        if inferring:
+            if track is None or not track.active:
+                track = _HostInferTrack()
+                track.active = True
+                track.start_ts = now
+                track.last_ts = now
+                track.agent = self._select_active_agent(clients)
+                self._host_inf[model] = track
+                self.store.push_activity(
+                    {
+                        "type": "infer",
+                        "model": model,
+                        "agent": track.agent,
+                        "source": "observed",
+                        "note": "host-cpu-gpu",
+                    }
+                )
+            assert track is not None
+            baseline = self._baseline_tps(model)
+            activity = max(gpu_util / 100.0, min(1.0, float(cpu_raw) / 80.0))
+            live = round(baseline * max(0.25, min(1.35, activity)), 2)
+            elapsed = max(0.05, now - track.start_ts)
+            track.live_tps = live
+            track.est_tokens = max(track.est_tokens, int(elapsed * live))
+            track.avg_tps = round(track.est_tokens / elapsed, 2) if elapsed > 0.05 else live
+            track.peak_cpu = max(track.peak_cpu, float(cpu_raw))
+            track.peak_gpu = max(track.peak_gpu, float(gpu_util))
+            track.samples += 1
+            track.tps_sum += live
+            track.last_ts = now
+            # ajan güncelle (daha spesifik istemci geldiyse)
+            agent = self._select_active_agent(clients)
+            if self._agent_specificity(agent) >= self._agent_specificity(track.agent):
+                track.agent = agent
+            meta.update(
+                {
+                    "live_tps": track.live_tps,
+                    "avg_tps": track.avg_tps,
+                    "tokens": track.est_tokens,
+                    "agent": track.agent,
+                    "estimated": True,
+                }
+            )
+            return meta
+
+        # inferring bitti → history'e yaz
+        if track is not None and track.active:
+            elapsed = max(0.0, (track.last_ts or now) - track.start_ts)
+            produced = int(track.est_tokens)
+            avg = track.avg_tps
+            if avg is None and track.samples:
+                avg = round(track.tps_sum / track.samples, 2)
+            if elapsed >= 0.4 and produced > 0 and avg and avg > 0:
+                metrics = RunMetrics(
+                    model=model,
+                    prompt_tokens=0,
+                    completion_tokens=produced,
+                    total_tokens=produced,
+                    prompt_tps=None,
+                    completion_tps=float(avg),
+                    total_duration_ms=round(elapsed * 1000, 2),
+                    load_duration_ms=None,
+                    prompt_eval_ms=None,
+                    eval_ms=round(elapsed * 1000, 2),
+                    ttft_ms=None,
+                    wall_ms=round(elapsed * 1000, 2),
+                    source="observed",
+                    agent=track.agent or "external",
+                    client="host-obs",
+                    endpoint="host-infer",
+                )
+                self.store.add_observed_run(metrics)
+                self.store.push_activity(
+                    {
+                        "type": "finish",
+                        "model": model,
+                        "agent": track.agent,
+                        "source": "observed",
+                        "completion_tps": avg,
+                        "completion_tokens": produced,
+                        "note": "host-estimated",
+                    }
+                )
+            track.active = False
+            self._host_inf.pop(model, None)
+        return meta
+
     async def _update_slot_metrics(
         self,
         *,
@@ -868,7 +1036,6 @@ class PassiveObserver:
             if inferring or busy:
                 row_agent = slot_meta.get("agent") or event_agent
                 if row_agent in {None, "", "external"}:
-                    # Hâlâ isimsizse ilk anlamlı istemci ajanını kullan
                     for c in clients:
                         a = (c.get("agent") or "").strip()
                         if a and a not in NOISE_AGENTS:
@@ -880,6 +1047,30 @@ class PassiveObserver:
             live_tps = slot_meta.get("live_tps") if slots_inferring else None
             avg_tps = slot_meta.get("avg_tps") if slots_inferring else None
             tokens = (slot_meta.get("tokens") or 0) if slots_inferring else 0
+            estimated = False
+            metric_source = "slots" if slots_inferring else None
+
+            # /slots yok (MLX): host CPU+GPU ile tok/s üret ve history'e yaz
+            if not slots_inferring and model and model != "unknown":
+                host_meta = self._update_host_infer(
+                    model=model,
+                    inferring=inferring,
+                    clients=clients,
+                    cpu_raw=float(r.cpu_raw or 0.0),
+                    gpu_util=float(gpu_util),
+                )
+                if host_meta.get("live_tps") is not None:
+                    live_tps = host_meta.get("live_tps")
+                    avg_tps = host_meta.get("avg_tps")
+                    tokens = int(host_meta.get("tokens") or 0)
+                    estimated = bool(host_meta.get("estimated"))
+                    metric_source = "host-est"
+                    if host_meta.get("agent"):
+                        row_agent = host_meta.get("agent")
+                elif not inferring:
+                    metric_source = None
+                elif cpu_inferring:
+                    metric_source = "gpu" if gpu_hot and not cpu_hot else "cpu"
 
             row = {
                 "pid": r.pid if r.pid else None,
@@ -897,16 +1088,27 @@ class PassiveObserver:
                 "tokens": tokens,
                 "prompt_tokens": slot_meta.get("prompt_tokens") or 0,
                 "agent": row_agent,
-                "metric_source": (
-                    "slots"
-                    if slots_inferring
-                    else ("gpu" if cpu_inferring and gpu_hot and not cpu_hot else ("cpu" if cpu_inferring else None))
-                ),
+                "metric_source": metric_source,
+                "estimated": estimated,
                 "gpu_util_pct": round(gpu_util, 1) if gpu_hot or inferring else None,
             }
             observed.append(row)
             if model and model != "unknown":
                 runner_by_model[model] = row
+
+        # Runner listesinden düşen aktif host-infer track'lerini kapat
+        for mid, tr in list(self._host_inf.items()):
+            if not tr.active:
+                continue
+            if mid in runner_by_model:
+                continue
+            self._update_host_infer(
+                model=mid,
+                inferring=False,
+                clients=clients,
+                cpu_raw=0.0,
+                gpu_util=0.0,
+            )
 
         now = time.time()
         current_names: set[str] = set()
