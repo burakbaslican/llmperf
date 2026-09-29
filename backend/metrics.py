@@ -356,7 +356,7 @@ class MetricsStore:
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            "version": "1.3.0",
+            "version": "1.3.1",
             "ollama": self.ollama_status,
             "models": self.models,
             "running": self.running,

@@ -6,8 +6,8 @@
     ollamaStatusText: $("ollamaStatusText"),
     mTotalTps: $("mTotalTps"),
     mTotalSub: $("mTotalSub"),
-    mAgentTps: $("mAgentTps"),
-    mAgentSub: $("mAgentSub"),
+    mVram: $("mVram"),
+    mVramSub: $("mVramSub"),
     mTokens: $("mTokens"),
     mTokensSub: $("mTokensSub"),
     mClients: $("mClients"),
@@ -146,19 +146,57 @@
       .join("") || `<tr><td colspan="3">Şu an bellekde model yok</td></tr>`;
   }
 
+  function fillVram(observed, gpus, running) {
+    const byModel = new Map();
+    for (const o of observed || []) {
+      const name = (o.model || "").trim();
+      if (!name || name === "unknown") continue;
+      const v = Number(o.size_vram || 0);
+      if (v > 0) byModel.set(name, Math.max(byModel.get(name) || 0, v));
+    }
+    for (const m of running || []) {
+      const name = (m.name || m.model || "").trim();
+      if (!name) continue;
+      const v = Number(m.size_vram ?? m.size ?? 0);
+      if (v > 0) byModel.set(name, Math.max(byModel.get(name) || 0, v));
+    }
+    let used = [...byModel.values()].reduce((a, b) => a + b, 0);
+    let total = null;
+    let gpuUsed = null;
+    if (gpus && gpus.length) {
+      const ranked = [...gpus].sort(
+        (a, b) => (b.mem_used || 0) - (a.mem_used || 0) || (b.mem_total || 0) - (a.mem_total || 0)
+      );
+      const g = ranked[0];
+      if (g.mem_total) total = Number(g.mem_total);
+      if (g.mem_used != null) gpuUsed = Number(g.mem_used);
+    }
+    // Model VRAM yoksa mactop / unified memory
+    if (used <= 0 && gpuUsed != null) used = gpuUsed;
+
+    if (used <= 0) {
+      els.mVram.textContent = "—";
+      els.mVramSub.textContent = "yüklü model yok";
+      return;
+    }
+    els.mVram.textContent = fmtBytes(used);
+    if (total) {
+      const pct = Math.min(100, Math.round((used / total) * 100));
+      els.mVramSub.textContent = `${fmtBytes(total)} · %${pct}${byModel.size ? ` · ${byModel.size} model` : ""}`;
+    } else {
+      els.mVramSub.textContent = byModel.size ? `${byModel.size} model` : "yüklü modeller";
+    }
+  }
+
   function fillThroughput(throughput, live) {
     const total = throughput?.total_tps ?? live?.total_tps;
     const agentMap = throughput?.agent_tps || live?.agent_tps || {};
     const entries = Object.entries(agentMap).sort((a, b) => b[1] - a[1]);
-    const primary = entries[0];
 
     els.mTotalTps.textContent = fmtNum(total);
     els.mTotalSub.textContent = entries.length
       ? `${entries.length} ajan · Σ`
       : "tüm ajanlar";
-
-    els.mAgentTps.textContent = primary ? fmtNum(primary[1]) : "—";
-    els.mAgentSub.textContent = primary ? primary[0] : "birincil ajan";
 
     els.mTokens.textContent = String(throughput?.active_tokens ?? live?.tokens ?? 0);
     els.mTokensSub.textContent = live?.model ? live.model : "bu tur";
@@ -539,6 +577,7 @@
     fillRunning(snapshot.running);
     fillThroughput(snapshot.throughput, snapshot.live);
     fillObserved(snapshot.observed);
+    fillVram(snapshot.observed, snapshot.gpus, snapshot.running);
     fillGpu(snapshot.gpus);
     fillClients(snapshot.clients);
     fillActivity(snapshot.activity);
