@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${1:-1.2.6}"
+VERSION="${1:-1.2.9}"
 NAME="llmperf-docker-mac-arm64-${VERSION}"
 OUT_DIR="${ROOT}/dist"
 STAGE="${OUT_DIR}/${NAME}"
@@ -17,14 +17,14 @@ mkdir -p "${STAGE}/scripts"
 cp -a backend frontend "${STAGE}/"
 cp Dockerfile docker-compose.mac.yml .dockerignore .env.example \
   install-docker-mac.sh README.md "${STAGE}/"
-cp scripts/detect-slots-ports.sh scripts/detect-host-obs.py "${STAGE}/scripts/"
+cp scripts/detect-slots-ports.sh scripts/detect-host-obs.py scripts/sample-mactop-gpu.py "${STAGE}/scripts/"
 [[ -f .gitignore ]] && cp .gitignore "${STAGE}/"
 
 find "${STAGE}" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 find "${STAGE}" -type d -name '.venv' -exec rm -rf {} + 2>/dev/null || true
 find "${STAGE}" -name '*.pyc' -delete 2>/dev/null || true
 
-chmod +x "${STAGE}/install-docker-mac.sh" "${STAGE}/scripts/detect-slots-ports.sh" "${STAGE}/scripts/detect-host-obs.py"
+chmod +x "${STAGE}/install-docker-mac.sh" "${STAGE}/scripts/"*.sh "${STAGE}/scripts/"*.py
 
 cat > "${STAGE}/MAC-DOCKER.md" <<'EOF'
 # LLMPerf — Docker Desktop (M1 / M2 Ultra / M3)
@@ -35,6 +35,7 @@ cat > "${STAGE}/MAC-DOCKER.md" <<'EOF'
 
 - Docker Desktop for Mac (Apple Silicon)
 - Host’ta Ollama (`ollama serve`, port 11434)
+- GPU % için host’ta `mactop` (`brew install mactop`) — isteğe bağlı
 
 ## Kurulum
 
@@ -59,10 +60,8 @@ Panel: **http://127.0.0.1:8080**
 | Ollama modelleri (`/api/ps`) | Evet |
 | Canlı tok/s (`/slots`) | Evet (host port izleyici) |
 | Benchmark | Evet |
-| Ajan süreç adları | Sınırlı (VM /proc) |
-| Apple GPU util % | Hayır (etiket yok) |
-
-Tam ajan/GPU için native paket: `llmperf-mac-arm64-*.tar.gz` + `./install-mac.sh up`
+| Bağlı istemciler + modeller | Evet (host `detect-host-obs`) |
+| Apple GPU util % | Evet (`mactop` host örneklemesi) |
 EOF
 
 ARCHIVE="${OUT_DIR}/${NAME}.tar.gz"

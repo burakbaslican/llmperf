@@ -7,7 +7,9 @@ cd "$ROOT"
 
 PORTS_FILE="${ROOT}/.llmperf-slots-ports"
 OBS_FILE="${ROOT}/.llmperf-host-obs"
+GPU_FILE="${ROOT}/.llmperf-gpu.json"
 WATCH_PID_FILE="${ROOT}/.llmperf-ports-watch.pid"
+GPU_WATCH_PID_FILE="${ROOT}/.llmperf-gpu-watch.pid"
 COMPOSE_FILE="docker-compose.mac.yml"
 
 die() { echo "Hata: $*" >&2; exit 1; }
@@ -40,27 +42,121 @@ ensure_env() {
     } >> .env
     echo ".env oluşturuldu (Mac Docker ayarlarıyla)."
   fi
-  touch "$PORTS_FILE"
-  echo '{}' >"$OBS_FILE"
+  # Dosyaları bir kez oluştur; sonra yalnızca inplace yaz (Docker bind inode)
+  [[ -f "$PORTS_FILE" ]] || : >"$PORTS_FILE"
+  [[ -f "$OBS_FILE" ]] || printf '%s\n' '{}' >"$OBS_FILE"
+  [[ -f "$GPU_FILE" ]] || printf '%s\n' '[]' >"$GPU_FILE"
+}
+
+write_inplace() {
+  # Docker Desktop Mac: mv/replace inode değiştirir → volume bağını koparır
+  local dest="$1"
+  local src="$2"
+  if [[ -f "$dest" ]]; then
+    cat "$src" >"$dest"
+  else
+    cp "$src" "$dest"
+  fi
+  rm -f "$src"
 }
 
 write_ports() {
   local ports
   ports="$("${ROOT}/scripts/detect-slots-ports.sh" 2>/dev/null || true)"
-  echo "$ports" >"$PORTS_FILE"
-  chmod +x "${ROOT}/scripts/detect-host-obs.py" 2>/dev/null || true
+  if [[ -f "$PORTS_FILE" ]]; then
+    printf '%s\n' "$ports" >"$PORTS_FILE"
+  else
+    printf '%s\n' "$ports" >"$PORTS_FILE"
+  fi
+  chmod +x "${ROOT}/scripts/detect-host-obs.py" "${ROOT}/scripts/sample-mactop-gpu.py" 2>/dev/null || true
   if command -v python3 >/dev/null 2>&1; then
-    python3 "${ROOT}/scripts/detect-host-obs.py" >"$OBS_FILE" 2>/dev/null || echo '{}' >"$OBS_FILE"
+    if LLMPERF_GPU_CACHE="$GPU_FILE" \
+       LLMPERF_CLIENT_CACHE="${ROOT}/.llmperf-clients-cache.json" \
+       python3 "${ROOT}/scripts/detect-host-obs.py" >"${OBS_FILE}.tmp" 2>/dev/null; then
+      write_inplace "$OBS_FILE" "${OBS_FILE}.tmp"
+    else
+      rm -f "${OBS_FILE}.tmp"
+      printf '%s\n' '{}' >"$OBS_FILE"
+    fi
+  fi
+}
+
+cleanup_stale_watches() {
+  # Eski kurulumlardan kalan izleyicileri temizle (dosya kilidi / donma)
+  pkill -f "${ROOT}/scripts/sample-mactop-gpu.py" 2>/dev/null || true
+  pkill -f "${ROOT}/scripts/detect-host-obs.py" 2>/dev/null || true
+  # Bu dizine ait eski install watch döngüleri
+  if [[ -f "$WATCH_PID_FILE" ]]; then
+    kill "$(cat "$WATCH_PID_FILE")" 2>/dev/null || true
+    rm -f "$WATCH_PID_FILE"
+  fi
+  if [[ -f "$GPU_WATCH_PID_FILE" ]]; then
+    kill "$(cat "$GPU_WATCH_PID_FILE")" 2>/dev/null || true
+    pkill -P "$(cat "$GPU_WATCH_PID_FILE" 2>/dev/null)" 2>/dev/null || true
+    rm -f "$GPU_WATCH_PID_FILE"
+  fi
+}
+
+start_gpu_watch() {
+  stop_gpu_watch
+  chmod +x "${ROOT}/scripts/sample-mactop-gpu.py" 2>/dev/null || true
+  (
+    while true; do
+      if command -v python3 >/dev/null 2>&1; then
+        python3 "${ROOT}/scripts/sample-mactop-gpu.py" >"${GPU_FILE}.tmp" 2>/dev/null \
+          && write_inplace "$GPU_FILE" "${GPU_FILE}.tmp" \
+          || printf '%s\n' '[]' >"$GPU_FILE"
+        # GPU'yu host-obs içine de yaz (container gecikmesin) — inplace
+        if [[ -f "$OBS_FILE" ]] && command -v python3 >/dev/null 2>&1; then
+          python3 - "$OBS_FILE" "$GPU_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+obs_p, gpu_p = sys.argv[1], sys.argv[2]
+try:
+    with open(obs_p, encoding="utf-8") as f:
+        obs = json.loads(f.read() or "{}")
+except Exception:
+    obs = {}
+try:
+    with open(gpu_p, encoding="utf-8") as f:
+        gpus = json.loads(f.read() or "[]")
+except Exception:
+    gpus = []
+if not isinstance(obs, dict):
+    obs = {}
+obs["gpus"] = gpus if isinstance(gpus, list) else []
+# Truncate in place — keep Docker bind-mount inode
+data = json.dumps(obs, ensure_ascii=False)
+with open(obs_p, "w", encoding="utf-8") as f:
+    f.write(data)
+    f.write("\n")
+PY
+        fi
+      fi
+      sleep 2
+    done
+  ) &
+  echo $! >"$GPU_WATCH_PID_FILE"
+}
+
+stop_gpu_watch() {
+  if [[ -f "$GPU_WATCH_PID_FILE" ]]; then
+    local pid
+    pid="$(cat "$GPU_WATCH_PID_FILE")"
+    kill "$pid" 2>/dev/null || true
+    pkill -P "$pid" 2>/dev/null || true
+    rm -f "$GPU_WATCH_PID_FILE"
   fi
 }
 
 start_ports_watch() {
+  cleanup_stale_watches
   stop_ports_watch
+  start_gpu_watch
   write_ports
   (
     while true; do
       write_ports
-      sleep 2
+      sleep 1
     done
   ) &
   echo $! >"$WATCH_PID_FILE"
@@ -73,6 +169,7 @@ stop_ports_watch() {
     kill "$pid" 2>/dev/null || true
     rm -f "$WATCH_PID_FILE"
   fi
+  stop_gpu_watch
 }
 
 cmd_up() {

@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     broadcast_min_interval_ms: float = 200.0
     # Runner CPU eşiği (Linux multicore %, ham) — üstündeyse busy
     runner_cpu_active_pct: float = 8.0
+    # /slots yokken (MLX ollama runner) bu CPU üstü → inferring
+    runner_cpu_infer_pct: float = 18.0
     # expires_at ileri kayarsa kullanım nabzı
     expires_skew_sec: float = 1.0
     # llama-server /slots host (boşsa ollama_base_url hostname)

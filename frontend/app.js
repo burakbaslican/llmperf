@@ -167,18 +167,20 @@
 
     if (!entries.length) {
       els.agentTpsBars.innerHTML =
-        `<div class="agent-tps-empty">Aktif çıkarım yok — ajan üretince tok/s burada toplanır.</div>`;
+        live?.status === "running"
+          ? `<div class="agent-tps-empty">Üretim var · tok/s yok (MLX/runner) · ${live.model || ""} · GPU ${fmtNum(live.gpu_util_pct, 0)}%</div>`
+          : `<div class="agent-tps-empty">Aktif çıkarım yok — ajan üretince tok/s burada toplanır.</div>`;
       return;
     }
     const max = Math.max(...entries.map(([, v]) => v), 1);
     els.agentTpsBars.innerHTML = entries
-      .filter(([, tps]) => tps > 0)
       .map(([name, tps]) => {
-        const pct = Math.max(4, Math.round((tps / max) * 100));
+        const pct = tps > 0 ? Math.max(4, Math.round((tps / max) * 100)) : 4;
+        const val = tps > 0 ? `${fmtNum(tps)} t/s` : "aktif";
         return `<div class="agent-tps-row">
           <div class="name">${name}</div>
           <div class="bar"><span style="width:${pct}%"></span></div>
-          <div class="val">${fmtNum(tps)} t/s</div>
+          <div class="val">${val}</div>
         </div>`;
       })
       .join("");
@@ -348,7 +350,11 @@
         const tps = o.avg_tps ?? o.live_tps;
         const ttl = o.expires_in_sec != null ? ` · ttl ${fmtNum(o.expires_in_sec, 0)}s` : "";
         const pid = o.pid != null && o.pid > 0 ? `pid ${o.pid}` : "resident";
-        const tpsLabel = o.inferring && tps != null ? `${fmtNum(tps)} t/s` : "—";
+        let tpsLabel = "—";
+        if (tps != null) tpsLabel = `${fmtNum(tps)} t/s`;
+        else if (o.inferring && (o.cpu_raw != null || o.cpu_pct != null)) {
+          tpsLabel = `cpu ${fmtNum(o.cpu_raw ?? o.cpu_pct, 0)}%`;
+        }
         return `<article class="session-card" data-status="${status}">
           <div class="session-top">
             <span class="session-agent">${o.agent ? `${o.agent} · ` : ""}${o.model || "?"}</span>
@@ -378,21 +384,26 @@
       g.mem_used != null && g.mem_total
         ? ` · ${fmtBytes(g.mem_used)}/${fmtBytes(g.mem_total)}`
         : "";
-    els.mGpuSub.textContent = `${g.name || g.vendor || "gpu"}${mem}`;
+    const power = g.power_w != null ? ` · ${fmtNum(g.power_w, 1)}W` : "";
+    els.mGpuSub.textContent = `${g.name || g.vendor || "gpu"}${mem}${power}`;
   }
 
   function fillClients(clients) {
     const list = clients || [];
     els.mClients.textContent = String(list.length);
-    els.mClientsSub.textContent = list.map((c) => c.agent).filter(Boolean).slice(0, 3).join(", ") || "tcp :11434";
+    const agents = [...new Set(list.map((c) => c.agent).filter(Boolean))].slice(0, 3);
+    const models = [...new Set(list.map((c) => c.model).filter(Boolean))].slice(0, 2);
+    els.mClientsSub.textContent =
+      (agents.join(", ") || "tcp :11434") + (models.length ? ` · ${models.join(", ")}` : "");
     els.clientsBody.innerHTML = list
       .map((c) => `<tr>
         <td>${c.agent || "—"}</td>
-        <td class="mono">${c.pid ?? "—"}</td>
+        <td class="mono">${c.model || "—"}</td>
+        <td class="mono">${c.pid ?? (c.peer && c.peer !== "local" ? c.peer : "—")}</td>
         <td class="mono">${c.comm || "—"}</td>
         <td class="mono">${(c.cmdline || "").slice(0, 60)}</td>
       </tr>`)
-      .join("") || `<tr><td colspan="4">Bağlı istemci yok</td></tr>`;
+      .join("") || `<tr><td colspan="5">Bağlı istemci yok</td></tr>`;
   }
 
   function fillActivity(activity) {
@@ -434,7 +445,8 @@
         els.streamMeta.textContent = `bitti · ${live.last_response_model}`;
       }
     } else if (live.status === "running") {
-      els.streamMeta.textContent = `canlı · ${live.agent || ""} · ${live.model || ""} · ${fmtNum(live.live_tps)} t/s`;
+      const tpsPart = live.live_tps != null ? `${fmtNum(live.live_tps)} t/s` : (live.partial || "aktif");
+      els.streamMeta.textContent = `canlı · ${live.agent || ""} · ${live.model || ""} · ${tpsPart}`;
       els.streamTokens.textContent = `${live.tokens || 0} tok`;
     }
   }

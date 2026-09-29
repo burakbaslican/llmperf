@@ -216,14 +216,19 @@ class MetricsStore:
         self._sync_live()
 
     def _sync_live(self) -> None:
-        # Only runners that are actually generating contribute to ajan tok/s
-        active_obs = [
+        # Üretimde olan runner'lar (slots tok/s veya CPU ile inferring)
+        generating = [
             o
             for o in self.observed
-            if o.get("slot_processing") and (o.get("avg_tps") or o.get("live_tps"))
+            if o.get("inferring") or o.get("slot_processing")
+        ]
+        active_obs = [
+            o
+            for o in generating
+            if (o.get("avg_tps") or o.get("live_tps"))
         ]
         bench = list(self.sessions.values())
-        active_count = len(active_obs) + len(bench)
+        active_count = len(generating) + len(bench)
         self.live["active_count"] = active_count
         self.live["mode"] = "passive"
 
@@ -242,6 +247,15 @@ class MetricsStore:
             agent_tps[agent] = round(agent_tps.get(agent, 0.0) + float(tps), 2)
             total += float(tps)
             active_tokens += int(o.get("tokens") or 0)
+
+        # CPU-only inferring: ajanı listede göster (tok/s yok)
+        for o in generating:
+            if o.get("avg_tps") or o.get("live_tps"):
+                continue
+            agent = (o.get("agent") or "").strip()
+            if not agent or "," in agent or agent in {"?", "unknown"}:
+                agent = "external"
+            agent_tps.setdefault(agent, 0.0)
 
         for s in bench:
             tps = s.get("live_tps")
@@ -262,6 +276,14 @@ class MetricsStore:
         self.live["total_tps"] = total_tps
         self.live["agent_tps"] = agent_tps
 
+        gpu_util = None
+        if self.gpus:
+            try:
+                gpu_util = max(float(g.get("util_pct") or 0) for g in self.gpus)
+            except (TypeError, ValueError):
+                gpu_util = None
+        self.live["gpu_util_pct"] = gpu_util
+
         if bench:
             best = max(bench, key=lambda s: s.get("live_tps") or 0)
             self.live.update(
@@ -278,23 +300,32 @@ class MetricsStore:
             )
             return
 
-        if active_obs:
+        if generating:
             best = max(
-                active_obs,
-                key=lambda o: (o.get("avg_tps") or o.get("live_tps") or 0, o.get("cpu_pct") or 0),
+                generating,
+                key=lambda o: (
+                    o.get("avg_tps") or o.get("live_tps") or 0,
+                    o.get("cpu_raw") or o.get("cpu_pct") or 0,
+                ),
             )
+            tps = best.get("avg_tps") or best.get("live_tps")
+            cpu = best.get("cpu_raw") or best.get("cpu_pct")
+            parts = []
+            if tps:
+                parts.append(f"{tps} t/s")
+            elif cpu:
+                parts.append(f"cpu {cpu}%")
+            if gpu_util is not None:
+                parts.append(f"gpu {gpu_util}%")
+            parts.append(best.get("agent") or "external")
             self.live.update(
                 {
                     "status": "running",
                     "model": best.get("model"),
                     "tokens": active_tokens,
                     "elapsed_ms": None,
-                    "live_tps": best.get("avg_tps") or best.get("live_tps"),
-                    "partial": (
-                        f"{best.get('tokens') or 0} tok · "
-                        f"{best.get('avg_tps') or best.get('live_tps') or '—'} t/s · "
-                        f"{best.get('agent') or 'external'}"
-                    ),
+                    "live_tps": tps,
+                    "partial": " · ".join(str(p) for p in parts if p),
                     "agent": best.get("agent") or "external",
                     "active_agents": sorted(agent_tps.keys()),
                 }
@@ -305,6 +336,9 @@ class MetricsStore:
         self.live["live_tps"] = None
         self.live["tokens"] = 0
         self.live["active_agents"] = []
+        self.live["partial"] = ""
+        self.live["model"] = None
+        self.live["agent"] = None
 
     def should_broadcast(self, min_interval_ms: float) -> bool:
         now = time.perf_counter()
@@ -318,7 +352,7 @@ class MetricsStore:
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            "version": "1.2.6",
+            "version": "1.2.9",
             "ollama": self.ollama_status,
             "models": self.models,
             "running": self.running,

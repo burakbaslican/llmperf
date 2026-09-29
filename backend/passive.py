@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -53,7 +54,9 @@ class _SlotTrack:
         self.agent = "external"
 
 
-NOISE_AGENTS = frozenset({"llmperf", "uvicorn", "unknown", "?", "ollama-serve"})
+NOISE_AGENTS = frozenset({"llmperf", "uvicorn", "unknown", "?", "ollama-serve", "ollama-runner"})
+GENERIC_AGENTS = frozenset({"python", "node", "java", "external", "remote"})
+CLIENT_TTL_SEC = 20.0
 
 
 class PassiveObserver:
@@ -72,6 +75,7 @@ class PassiveObserver:
         self._last_slots_scan = 0.0
         self._scan_lock = asyncio.Lock()
         self._model_pulse_until: dict[str, float] = {}
+        self._client_ttl: dict[str, tuple[float, dict[str, Any]]] = {}
 
     @staticmethod
     def _port_from_url(url: str) -> int:
@@ -340,6 +344,29 @@ class PassiveObserver:
         for r in runners:
             if not r.port:
                 continue
+            cmdline = r.cmdline or ""
+            # Önce blob sha → katalog adı (llama-server --model /…/sha256-…)
+            sha = r.blob_sha or None
+            if not sha:
+                sm = re.search(r"sha256-([a-f0-9]{64})", cmdline)
+                sha = sm.group(1) if sm else None
+            if sha and sha in digest_index:
+                port_model[r.port] = digest_index[sha]
+                used_models.add(digest_index[sha])
+                continue
+            # Mac Ollama runner: --model dhmi-fast:latest (dosya yolu değilse)
+            m = re.search(r"--model(?:=|\s+)(\S+)", cmdline)
+            if m:
+                raw = m.group(1).strip("\"'")
+                if raw and not raw.startswith("/") and "sha256-" not in raw:
+                    port_model[r.port] = raw
+                    used_models.add(raw)
+                    continue
+                sm2 = re.search(r"sha256-([a-f0-9]{64})", raw)
+                if sm2 and sm2.group(1) in digest_index:
+                    port_model[r.port] = digest_index[sm2.group(1)]
+                    used_models.add(digest_index[sm2.group(1)])
+                    continue
             name = digest_index.get(r.blob_sha or "", "")
             if name:
                 port_model[r.port] = name
@@ -398,14 +425,31 @@ class PassiveObserver:
         host: list[dict[str, Any]],
         local: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        by_pid: dict[Any, dict[str, Any]] = {}
+        now = time.time()
+        by_key: dict[str, dict[str, Any]] = {}
         for c in local + host:
             pid = c.get("pid")
-            key = pid if pid is not None else f"{c.get('agent')}:{c.get('comm')}"
-            prev = by_pid.get(key)
+            peer = c.get("peer")
+            if pid is not None:
+                key = f"pid:{pid}"
+            elif peer and peer != "local":
+                key = f"peer:{peer}"
+            else:
+                key = f"agent:{c.get('agent')}:{c.get('comm')}"
+            prev = by_key.get(key)
             if not prev or float(c.get("cpu") or 0) >= float(prev.get("cpu") or 0):
-                by_pid[key] = c
-        return list(by_pid.values())
+                by_key[key] = c
+            self._client_ttl[key] = (now + CLIENT_TTL_SEC, dict(by_key[key]))
+
+        # TTL: kısa HTTP bağlantıları üretim boyunca görünsün
+        alive: dict[str, dict[str, Any]] = {}
+        for key, (exp, row) in list(self._client_ttl.items()):
+            if exp < now:
+                self._client_ttl.pop(key, None)
+                continue
+            fresh = by_key.get(key)
+            alive[key] = fresh if fresh is not None else row
+        return list(alive.values())
 
     def _client_candidates(self, clients: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -416,18 +460,96 @@ class PassiveObserver:
             out.append(c)
         return out
 
+    def _enrich_clients_with_models(
+        self,
+        clients: list[dict[str, Any]],
+        observed: list[dict[str, Any]],
+        runners: list[ProcSample],
+        port_models: dict[int, str],
+    ) -> list[dict[str, Any]]:
+        """TCP/remote istemcilere işlem yapılan model adlarını bağla."""
+        active_models: list[str] = []
+        for o in observed:
+            model = (o.get("model") or "").strip()
+            if not model or model == "unknown":
+                continue
+            if model.startswith("/") or ("sha256-" in model and "/" in model):
+                continue
+            if o.get("inferring") or o.get("status") in {"busy", "generating"}:
+                if model not in active_models:
+                    active_models.append(model)
+
+        model_label = ", ".join(active_models) if active_models else None
+        out: list[dict[str, Any]] = []
+        for c in clients:
+            row = dict(c)
+            if not row.get("model") and model_label:
+                row["model"] = model_label
+            out.append(row)
+
+        have_models = any((c.get("model") or "").strip() for c in out)
+        if out and have_models and not active_models:
+            return out
+
+        seen_models = {
+            (c.get("model") or "").strip()
+            for c in out
+            if (c.get("model") or "").strip() and "," not in str(c.get("model"))
+        }
+        for r in runners:
+            model = ""
+            if r.port and r.port in port_models:
+                model = port_models[r.port]
+            if not model:
+                m = re.search(r"--model(?:=|\s+)(\S+)", r.cmdline or "")
+                raw = m.group(1).strip("\"'") if m else ""
+                if raw and not raw.startswith("/") and "sha256-" not in raw:
+                    model = raw
+            if not model or model in seen_models:
+                continue
+            if model.startswith("/") or model.startswith("sha256-"):
+                continue
+            busy = (
+                model in active_models
+                or r.cpu_raw >= settings.runner_cpu_active_pct
+                or r.cpu_pct >= 3.0
+            )
+            out.append(
+                {
+                    "pid": r.pid,
+                    "comm": "ollama",
+                    "cmdline": (r.cmdline or "")[:200],
+                    "agent": "ollama-runner",
+                    "cpu": r.cpu_raw,
+                    "model": model,
+                    "role": "runner",
+                    "busy": busy,
+                }
+            )
+            seen_models.add(model)
+        return out
+
+    @staticmethod
+    def _agent_specificity(agent: str) -> int:
+        a = (agent or "").strip()
+        if not a or a in NOISE_AGENTS:
+            return -10
+        if a.startswith("remote:"):
+            return 40
+        if a in GENERIC_AGENTS:
+            return 10
+        return 80
+
     def _select_active_agent(self, clients: list[dict[str, Any]]) -> str:
         """Pick the single client most likely driving the current request.
 
-        Prefers the connected client with the highest process CPU; long-lived
-        `serve` daemons are de-prioritized so idle keep-alives don't steal credit.
-        Dashboard (llmperf) is deprioritized when other agents are present.
+        Prefers named app modules (dhm_analiz, …) over generic python/node,
+        and remote LAN peers over idle dashboard connections.
         """
         candidates = self._client_candidates(clients)
         if not candidates:
             return "external"
 
-        # Mac'te panel her zaman bağlı görünür — dış ajanları tercih et
         external = [
             c
             for c in candidates
@@ -447,11 +569,14 @@ class PassiveObserver:
                 _norm, raw, _rss = self.cpu.sample(pid)
             cmdline = (c.get("cmdline") or "").lower()
             is_service = " serve" in f" {cmdline}" or cmdline.rstrip().endswith("serve")
-            score = raw + (0.0 if is_service else 40.0)
-            # llmperf/dashboard düşük öncelik
-            if (c.get("agent") or "") in {"llmperf", "uvicorn"}:
-                score -= 30.0
-            scored.append((score, raw, str(c.get("agent") or "external")))
+            agent = str(c.get("agent") or "external")
+            score = raw + (0.0 if is_service else 40.0) + self._agent_specificity(agent)
+            if agent in {"llmperf", "uvicorn"}:
+                score -= 50.0
+            # Aktif remote bağlantı
+            if (c.get("role") or "") == "remote-client":
+                score += 25.0
+            scored.append((score, raw, agent))
         if not scored:
             return str(pool[0].get("agent") or "external")
 
@@ -595,7 +720,7 @@ class PassiveObserver:
         digest_index.update(self._blob_to_model)
 
         runners = list_llama_runners(self.cpu)
-        host_runners, host_clients = load_host_obs()
+        host_runners, host_clients, host_gpus = load_host_obs()
         # Mac Docker: host dosyasındaki runner'lar öncelikli
         if host_runners:
             runners = host_runners
@@ -641,7 +766,21 @@ class PassiveObserver:
 
         # İstemciler: host dosyası (Docker Mac) + yerel tarama birleşimi
         local_clients = list_clients_on_port(self._ollama_port)
-        clients = self._merge_clients(host_clients, local_clients)
+        # Docker Mac: container içindeki llmperf→host.docker.internal bağlantısı
+        # gerçek host uygulamalarını ezmesin
+        if settings.host_obs_file:
+            local_clients = [
+                c
+                for c in local_clients
+                if (c.get("agent") or "") not in NOISE_AGENTS
+                and (c.get("agent") or "") not in GENERIC_AGENTS
+            ]
+            if host_clients:
+                clients = self._merge_clients(host_clients, local_clients)
+            else:
+                clients = self._merge_clients([], local_clients)
+        else:
+            clients = self._merge_clients(host_clients, local_clients)
         event_agent = self._select_active_agent(clients)
 
         # Önce slot'lardan model ipucu topla
@@ -678,15 +817,37 @@ class PassiveObserver:
                     model = str(slot_meta["model_hint"])
 
             slot_processing = bool(slot_meta.get("slot_processing"))
-            # Metrik yokken inferring gösterme (sahte unknown kartı)
             has_signal = bool(
                 slot_meta.get("live_tps")
                 or slot_meta.get("avg_tps")
                 or (slot_meta.get("tokens") or 0) > 0
                 or (slot_meta.get("prompt_tokens") or 0) > 0
             )
-            inferring = slot_processing and has_signal
-            busy = (not inferring) and (r.cpu_raw >= settings.runner_cpu_active_pct)
+            # MLX / ollama runner: /slots yok → CPU veya GPU ile canlı üretim
+            cpu_busy = r.cpu_raw >= settings.runner_cpu_active_pct
+            cpu_hot = r.cpu_raw >= settings.runner_cpu_infer_pct
+            pulsing = time.time() < self._model_pulse_until.get(model, 0)
+            gpu_util = 0.0
+            if host_gpus:
+                try:
+                    gpu_util = max(float(g.get("util_pct") or 0.0) for g in host_gpus)
+                except (TypeError, ValueError):
+                    gpu_util = 0.0
+            gpu_hot = gpu_util >= 35.0
+            slots_inferring = slot_processing and has_signal
+            # Apple Silicon MLX: CPU düşük kalır, GPU yükselir
+            cpu_inferring = (
+                not slots_inferring
+                and not self._is_embedding_model(model)
+                and (
+                    cpu_hot
+                    or (pulsing and (cpu_busy or gpu_hot))
+                    or (gpu_hot and cpu_busy)
+                    or (gpu_hot and r.cpu_raw >= 3.0)
+                )
+            )
+            inferring = slots_inferring or cpu_inferring
+            busy = (not inferring) and (cpu_busy or (gpu_hot and pulsing))
             if inferring:
                 status = "inferring"
             elif busy:
@@ -704,10 +865,21 @@ class PassiveObserver:
                 continue
 
             row_agent = None
-            if inferring:
+            if inferring or busy:
                 row_agent = slot_meta.get("agent") or event_agent
-            elif busy:
-                row_agent = event_agent if event_agent != "external" else None
+                if row_agent in {None, "", "external"}:
+                    # Hâlâ isimsizse ilk anlamlı istemci ajanını kullan
+                    for c in clients:
+                        a = (c.get("agent") or "").strip()
+                        if a and a not in NOISE_AGENTS:
+                            row_agent = a
+                            break
+                if row_agent == "external":
+                    row_agent = event_agent if event_agent != "external" else row_agent
+
+            live_tps = slot_meta.get("live_tps") if slots_inferring else None
+            avg_tps = slot_meta.get("avg_tps") if slots_inferring else None
+            tokens = (slot_meta.get("tokens") or 0) if slots_inferring else 0
 
             row = {
                 "pid": r.pid if r.pid else None,
@@ -720,11 +892,17 @@ class PassiveObserver:
                 "inferring": inferring,
                 "slot_processing": bool(inferring),
                 "status": status,
-                "live_tps": slot_meta.get("live_tps") if inferring else None,
-                "avg_tps": slot_meta.get("avg_tps") if inferring else None,
-                "tokens": (slot_meta.get("tokens") or 0) if inferring else 0,
+                "live_tps": live_tps,
+                "avg_tps": avg_tps,
+                "tokens": tokens,
                 "prompt_tokens": slot_meta.get("prompt_tokens") or 0,
                 "agent": row_agent,
+                "metric_source": (
+                    "slots"
+                    if slots_inferring
+                    else ("gpu" if cpu_inferring and gpu_hot and not cpu_hot else ("cpu" if cpu_inferring else None))
+                ),
+                "gpu_util_pct": round(gpu_util, 1) if gpu_hot or inferring else None,
             }
             observed.append(row)
             if model and model != "unknown":
@@ -837,4 +1015,6 @@ class PassiveObserver:
             seen.add(key)
             deduped.append(row)
 
-        self.store.set_observed(deduped, clients, sample_gpus())
+        clients = self._enrich_clients_with_models(clients, deduped, runners, port_models)
+        gpus = host_gpus or sample_gpus()
+        self.store.set_observed(deduped, clients, gpus)

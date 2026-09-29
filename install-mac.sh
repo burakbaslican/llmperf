@@ -11,7 +11,9 @@ PID_FILE="${ROOT}/.llmperf.pid"
 LOG_FILE="${ROOT}/.llmperf.log"
 PORTS_FILE="${ROOT}/.llmperf-slots-ports"
 OBS_FILE="${ROOT}/.llmperf-host-obs"
+GPU_FILE="${ROOT}/.llmperf-gpu.json"
 WATCH_PID_FILE="${ROOT}/.llmperf-ports-watch.pid"
+GPU_WATCH_PID_FILE="${ROOT}/.llmperf-gpu-watch.pid"
 HOST="${LLMPERF_HOST:-127.0.0.1}"
 PORT="${LLMPERF_PORT:-8080}"
 
@@ -22,14 +24,22 @@ require_macos() {
 }
 
 find_python() {
-  local candidates=(python3.13 python3.12 python3.11 python3.10 python3)
+  # Prefer 3.12/3.13 — 3.14 breaks pinned pydantic-core wheels on macOS
+  local candidates=(python3.12 python3.13 python3.11 python3.10)
   local p
   for p in "${candidates[@]}"; do
     if command -v "$p" >/dev/null 2>&1; then
-      if "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+      if "$p" -c 'import sys; raise SystemExit(0 if (3,10) <= sys.version_info < (3,14) else 1)'; then
         echo "$p"
         return 0
       fi
+    fi
+  done
+  # brew fallback paths
+  for p in /opt/homebrew/opt/python@3.12/bin/python3.12 /opt/homebrew/opt/python@3.13/bin/python3.13; do
+    if [[ -x "$p" ]] && "$p" -c 'import sys; raise SystemExit(0 if (3,10) <= sys.version_info < (3,14) else 1)'; then
+      echo "$p"
+      return 0
     fi
   done
   return 1
@@ -69,14 +79,38 @@ setup_venv() {
 write_ports() {
   local ports
   chmod +x "${ROOT}/scripts/detect-slots-ports.sh" 2>/dev/null || true
-  chmod +x "${ROOT}/scripts/detect-host-obs.py" 2>/dev/null || true
+  chmod +x "${ROOT}/scripts/detect-host-obs.py" "${ROOT}/scripts/sample-mactop-gpu.py" 2>/dev/null || true
   ports="$("${ROOT}/scripts/detect-slots-ports.sh" 2>/dev/null || true)"
   echo "$ports" >"$PORTS_FILE"
-  python3 "${ROOT}/scripts/detect-host-obs.py" >"$OBS_FILE" 2>/dev/null || echo '{}' >"$OBS_FILE"
+  LLMPERF_GPU_CACHE="$GPU_FILE" python3 "${ROOT}/scripts/detect-host-obs.py" >"$OBS_FILE" 2>/dev/null || echo '{}' >"$OBS_FILE"
+}
+
+start_gpu_watch() {
+  stop_gpu_watch
+  (
+    while true; do
+      python3 "${ROOT}/scripts/sample-mactop-gpu.py" >"${GPU_FILE}.tmp" 2>/dev/null \
+        && mv "${GPU_FILE}.tmp" "$GPU_FILE" \
+        || echo '[]' >"$GPU_FILE"
+      sleep 3
+    done
+  ) &
+  echo $! >"$GPU_WATCH_PID_FILE"
+}
+
+stop_gpu_watch() {
+  if [[ -f "$GPU_WATCH_PID_FILE" ]]; then
+    local pid
+    pid="$(cat "$GPU_WATCH_PID_FILE")"
+    kill "$pid" 2>/dev/null || true
+    pkill -P "$pid" 2>/dev/null || true
+    rm -f "$GPU_WATCH_PID_FILE"
+  fi
 }
 
 start_ports_watch() {
   stop_ports_watch
+  start_gpu_watch
   touch "$PORTS_FILE"
   echo '{}' >"$OBS_FILE"
   write_ports
@@ -94,6 +128,7 @@ stop_ports_watch() {
     kill "$(cat "$WATCH_PID_FILE")" 2>/dev/null || true
     rm -f "$WATCH_PID_FILE"
   fi
+  stop_gpu_watch
 }
 
 is_running() {

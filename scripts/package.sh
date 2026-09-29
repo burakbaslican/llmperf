@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${1:-1.2.6}"
+VERSION="${1:-1.2.9}"
 NAME="llmperf-${VERSION}"
 OUT_DIR="${ROOT}/dist"
 STAGE="${OUT_DIR}/${NAME}"

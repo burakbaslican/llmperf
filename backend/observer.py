@@ -236,7 +236,12 @@ def list_clients_on_port(port: int = 11434) -> list[dict[str, Any]]:
 def _list_clients_darwin(port: int) -> list[dict[str, Any]]:
     clients: list[dict[str, Any]] = []
     seen: set[int] = set()
-    # ESTABLISHED filtresi bazı Mac istemcilerini kaçırıyor; tüm TCP :port
+    seen_peer: set[str] = set()
+    # macOS lsof: son token çoğu zaman (ESTABLISHED); `->…:port` satırda ara
+    client_re = re.compile(rf"->(?:\[[^\]]+\]|[\d.]+):{port}(?:\s|$|\))")
+    server_peer_re = re.compile(
+        rf"(?:\[[^\]]+\]|[\d.]+):{port}->(\[?[\w.:]+\]?):(\d+)"
+    )
     try:
         out = subprocess.check_output(
             ["lsof", "-nP", f"-iTCP:{port}"],
@@ -246,6 +251,8 @@ def _list_clients_darwin(port: int) -> list[dict[str, Any]]:
     except (subprocess.SubprocessError, OSError):
         return clients
     for line in out.splitlines()[1:]:
+        if "(LISTEN)" in line.upper():
+            continue
         parts = line.split()
         if len(parts) < 2:
             continue
@@ -254,35 +261,59 @@ def _list_clients_darwin(port: int) -> list[dict[str, Any]]:
             pid = int(parts[1])
         except ValueError:
             continue
-        if pid in seen:
+
+        if client_re.search(line):
+            if pid in seen:
+                continue
+            seen.add(pid)
+            cmdline = ""
+            try:
+                cmdline = subprocess.check_output(
+                    ["ps", "-p", str(pid), "-o", "command="],
+                    text=True,
+                    timeout=0.5,
+                ).strip()
+            except (subprocess.SubprocessError, OSError):
+                cmdline = comm
+            agent = guess_agent_from_process(comm, cmdline)
+            if agent == "ollama-serve" or "ollama serve" in cmdline.lower():
+                continue
+            clients.append(
+                {
+                    "pid": pid,
+                    "comm": comm,
+                    "cmdline": cmdline[:200],
+                    "agent": agent,
+                    "model": None,
+                    "peer": "local",
+                    "role": "client",
+                }
+            )
             continue
-        name = parts[-1] if parts else ""
-        # LISTEN satırı (ollama) — istemci değil
-        if "->" not in name and "(LISTEN)" in line.upper():
-            continue
-        if "->" not in name and name.endswith(f":{port}"):
-            continue
-        seen.add(pid)
-        cmdline = ""
-        try:
-            cmdline = subprocess.check_output(
-                ["ps", "-p", str(pid), "-o", "command="],
-                text=True,
-                timeout=0.5,
-            ).strip()
-        except (subprocess.SubprocessError, OSError):
-            cmdline = comm
-        agent = guess_agent_from_process(comm, cmdline)
-        if agent == "ollama-serve" or "ollama serve" in cmdline.lower():
-            continue
-        clients.append(
-            {
-                "pid": pid,
-                "comm": comm,
-                "cmdline": cmdline[:200],
-                "agent": agent,
-            }
-        )
+
+        if comm.lower().startswith("ollama") and "(ESTABLISHED)" in line.upper():
+            m = server_peer_re.search(line)
+            if not m:
+                continue
+            peer = m.group(1).strip().strip("[]")
+            if peer.startswith("::ffff:"):
+                peer = peer[7:]
+            if peer in {"127.0.0.1", "::1"} or peer.startswith("127."):
+                continue
+            if peer in seen_peer:
+                continue
+            seen_peer.add(peer)
+            clients.append(
+                {
+                    "pid": None,
+                    "comm": "remote",
+                    "cmdline": f"tcp://{peer} → :{port}",
+                    "agent": f"remote:{peer}",
+                    "model": None,
+                    "peer": peer,
+                    "role": "remote-client",
+                }
+            )
     return clients
 
 
@@ -357,41 +388,61 @@ def _list_clients_linux(port: int) -> list[dict[str, Any]]:
 
 
 def guess_agent_from_process(comm: str, cmdline: str) -> str:
-    blob = f"{comm} {cmdline}".lower()
+    blob = f"{comm} {cmdline}"
+    low = blob.lower()
+    m = re.search(r"(?:^|\s)-m\s+([A-Za-z_][\w.]*)", cmdline or "")
+    if m:
+        base = m.group(1).split(".")[0]
+        if base.lower() not in {"pip", "venv", "ensurepip", "http", "uvicorn", "gunicorn"}:
+            return base
+    sm = re.search(r"(?:^|[\s/])([\w.-]+)\.py\b", cmdline or "")
+    if sm:
+        name = sm.group(1)
+        if name.lower() not in {"site", "runpy", "pytest"}:
+            return name
     rules = [
         ("opencode", "opencode"),
         ("cursor helper", "cursor"),
         ("cursor", "cursor"),
+        ("continue.dev", "continue"),
         ("continue", "continue"),
         ("open-webui", "open-webui"),
         ("openwebui", "open-webui"),
         ("aider", "aider"),
         ("claude", "claude"),
         ("codex", "codex"),
+        ("dhm_analiz", "dhm_analiz"),
+        ("dhm_", "dhm"),
+        ("dhmi", "dhmi"),
+        ("sqlcl", "sqlcl"),
+        ("langchain", "langchain"),
         ("llmperf", "llmperf"),
         ("uvicorn", "llmperf"),
         ("python", "python"),
         ("node", "node"),
+        ("java", "java"),
         ("ollama", "ollama-cli"),
     ]
     for needle, label in rules:
-        if needle in blob:
+        if needle in low:
             return label
     return (comm or "unknown").strip() or "unknown"
 
 
-def load_host_obs(path: str | None = None) -> tuple[list[ProcSample], list[dict[str, Any]]]:
-    """Mac Docker host script'inin yazdığı JSON → runners + clients."""
+def load_host_obs(
+    path: str | None = None,
+) -> tuple[list[ProcSample], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Mac Docker host script'inin yazdığı JSON → runners + clients + gpus."""
     import json
 
     file_path = (path or settings.host_obs_file or "").strip()
     if not file_path:
-        return [], []
+        return [], [], []
     try:
         raw = Path(file_path).read_text(encoding="utf-8")
         data = json.loads(raw or "{}")
     except (OSError, json.JSONDecodeError, ValueError):
-        return [], []
+        return [], [], []
 
     runners: list[ProcSample] = []
     for r in data.get("runners") or []:
@@ -406,11 +457,19 @@ def load_host_obs(path: str | None = None) -> tuple[list[ProcSample], list[dict[
             port_i = int(port) if port is not None else None
         except (TypeError, ValueError):
             port_i = None
+        cmdline = str(r.get("cmdline") or "")[:300]
+        model = r.get("model")
+        if not model:
+            m = re.search(r"--model(?:=|\s+)(\S+)", cmdline)
+            model = m.group(1).strip("\"'") if m else None
+        # model bilgisini cmdline başında tut (port_models fallback)
+        if model and "--model" not in cmdline.lower():
+            cmdline = f"{cmdline} --model {model}"
         runners.append(
             ProcSample(
                 pid=pid,
                 name="llama-runner",
-                cmdline=str(r.get("cmdline") or "")[:300],
+                cmdline=cmdline,
                 cpu_pct=float(r.get("cpu_pct") or 0.0),
                 rss_bytes=int(r.get("rss_bytes") or 0),
                 blob_sha=r.get("blob_sha") or None,
@@ -431,9 +490,17 @@ def load_host_obs(path: str | None = None) -> tuple[list[ProcSample], list[dict[
                 "agent": c.get("agent")
                 or guess_agent_from_process(str(c.get("comm") or ""), str(c.get("cmdline") or "")),
                 "cpu": float(c.get("cpu") or 0.0),
+                "model": c.get("model"),
+                "peer": c.get("peer"),
+                "role": c.get("role"),
             }
         )
-    return runners, clients
+
+    gpus: list[dict[str, Any]] = []
+    for g in data.get("gpus") or []:
+        if isinstance(g, dict):
+            gpus.append(g)
+    return runners, clients, gpus
 
 
 def parse_expires_at(value: str | None) -> float | None:
@@ -489,8 +556,87 @@ def sample_gpus() -> list[dict[str, Any]]:
     return _sample_drm_gpus()
 
 
+_apple_gpu_memo: tuple[float, list[dict[str, Any]]] = (0.0, [])
+
+
 def _sample_apple_gpu() -> list[dict[str, Any]]:
-    """macOS: chip bilgisini göster (Metal util için root gerekir)."""
+    """macOS: mactop cache dosyası veya throttle'lı mactop örneklemesi."""
+    import json
+    import shutil
+
+    global _apple_gpu_memo
+
+    for cand in (
+        (os.environ.get("LLMPERF_GPU_CACHE") or "").strip(),
+        str(Path.cwd() / ".llmperf-gpu.json"),
+        str(Path(__file__).resolve().parent.parent / ".llmperf-gpu.json"),
+    ):
+        if not cand:
+            continue
+        path = Path(cand)
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8") or "[]")
+            if isinstance(data, dict):
+                data = data.get("gpus") or []
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                return data
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    now = time.time()
+    if _apple_gpu_memo[1] and now - _apple_gpu_memo[0] < 5.0:
+        return _apple_gpu_memo[1]
+
+    mactop = shutil.which("mactop")
+    if mactop:
+        try:
+            out = subprocess.check_output(
+                [mactop, "--headless", "--format", "json", "--count", "1"],
+                text=True,
+                timeout=20,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            data = json.loads(out) if out else None
+            row = data[0] if isinstance(data, list) and data else data
+            if isinstance(row, dict):
+                soc = row.get("soc_metrics") if isinstance(row.get("soc_metrics"), dict) else {}
+                gpu_m = row.get("gpu_metrics") if isinstance(row.get("gpu_metrics"), dict) else {}
+                info = row.get("system_info") if isinstance(row.get("system_info"), dict) else {}
+                mem = row.get("memory") if isinstance(row.get("memory"), dict) else {}
+                util = row.get("gpu_usage")
+                if util is None:
+                    util = gpu_m.get("active_percent", soc.get("gpu_active"))
+                util_pct = max(0.0, min(100.0, float(util or 0.0)))
+                name = str(info.get("name") or "Apple Silicon")
+                cores = info.get("gpu_core_count")
+                if cores:
+                    name = f"{name} · {cores} GPU"
+                mem_used = int(mem["used"]) if mem.get("used") is not None else None
+                mem_total = int(mem["total"]) if mem.get("total") is not None else None
+                mem_util = (
+                    round(mem_used / mem_total * 100.0, 1)
+                    if mem_used is not None and mem_total
+                    else None
+                )
+                rows = [
+                    {
+                        "index": 0,
+                        "name": name,
+                        "vendor": "Apple",
+                        "util_pct": round(util_pct, 1),
+                        "mem_util_pct": mem_util,
+                        "mem_used": mem_used,
+                        "mem_total": mem_total,
+                        "source": "mactop",
+                    }
+                ]
+                _apple_gpu_memo = (now, rows)
+                return rows
+        except (subprocess.SubprocessError, OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+
     name = "Apple Silicon"
     try:
         out = subprocess.check_output(
@@ -502,7 +648,7 @@ def _sample_apple_gpu() -> list[dict[str, Any]]:
             name = out
     except (subprocess.SubprocessError, OSError):
         pass
-    return [
+    rows = [
         {
             "index": 0,
             "name": name,
@@ -514,6 +660,8 @@ def _sample_apple_gpu() -> list[dict[str, Any]]:
             "source": "darwin",
         }
     ]
+    _apple_gpu_memo = (now, rows)
+    return rows
 
 
 def _sample_nvidia() -> list[dict[str, Any]]:
