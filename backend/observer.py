@@ -236,9 +236,10 @@ def list_clients_on_port(port: int = 11434) -> list[dict[str, Any]]:
 def _list_clients_darwin(port: int) -> list[dict[str, Any]]:
     clients: list[dict[str, Any]] = []
     seen: set[int] = set()
+    # ESTABLISHED filtresi bazı Mac istemcilerini kaçırıyor; tüm TCP :port
     try:
         out = subprocess.check_output(
-            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:ESTABLISHED"],
+            ["lsof", "-nP", f"-iTCP:{port}"],
             text=True,
             timeout=2.0,
         )
@@ -255,6 +256,12 @@ def _list_clients_darwin(port: int) -> list[dict[str, Any]]:
             continue
         if pid in seen:
             continue
+        name = parts[-1] if parts else ""
+        # LISTEN satırı (ollama) — istemci değil
+        if "->" not in name and "(LISTEN)" in line.upper():
+            continue
+        if "->" not in name and name.endswith(f":{port}"):
+            continue
         seen.add(pid)
         cmdline = ""
         try:
@@ -266,7 +273,7 @@ def _list_clients_darwin(port: int) -> list[dict[str, Any]]:
         except (subprocess.SubprocessError, OSError):
             cmdline = comm
         agent = guess_agent_from_process(comm, cmdline)
-        if agent == "ollama-serve" or "ollama serve" in cmdline:
+        if agent == "ollama-serve" or "ollama serve" in cmdline.lower():
             continue
         clients.append(
             {
@@ -353,6 +360,7 @@ def guess_agent_from_process(comm: str, cmdline: str) -> str:
     blob = f"{comm} {cmdline}".lower()
     rules = [
         ("opencode", "opencode"),
+        ("cursor helper", "cursor"),
         ("cursor", "cursor"),
         ("continue", "continue"),
         ("open-webui", "open-webui"),
@@ -369,7 +377,63 @@ def guess_agent_from_process(comm: str, cmdline: str) -> str:
     for needle, label in rules:
         if needle in blob:
             return label
-    return comm or "unknown"
+    return (comm or "unknown").strip() or "unknown"
+
+
+def load_host_obs(path: str | None = None) -> tuple[list[ProcSample], list[dict[str, Any]]]:
+    """Mac Docker host script'inin yazdığı JSON → runners + clients."""
+    import json
+
+    file_path = (path or settings.host_obs_file or "").strip()
+    if not file_path:
+        return [], []
+    try:
+        raw = Path(file_path).read_text(encoding="utf-8")
+        data = json.loads(raw or "{}")
+    except (OSError, json.JSONDecodeError, ValueError):
+        return [], []
+
+    runners: list[ProcSample] = []
+    for r in data.get("runners") or []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            pid = int(r.get("pid") or 0)
+        except (TypeError, ValueError):
+            continue
+        port = r.get("port")
+        try:
+            port_i = int(port) if port is not None else None
+        except (TypeError, ValueError):
+            port_i = None
+        runners.append(
+            ProcSample(
+                pid=pid,
+                name="llama-runner",
+                cmdline=str(r.get("cmdline") or "")[:300],
+                cpu_pct=float(r.get("cpu_pct") or 0.0),
+                rss_bytes=int(r.get("rss_bytes") or 0),
+                blob_sha=r.get("blob_sha") or None,
+                port=port_i,
+                cpu_raw=float(r.get("cpu_raw") or 0.0),
+            )
+        )
+
+    clients: list[dict[str, Any]] = []
+    for c in data.get("clients") or []:
+        if not isinstance(c, dict):
+            continue
+        clients.append(
+            {
+                "pid": c.get("pid"),
+                "comm": c.get("comm") or "unknown",
+                "cmdline": (c.get("cmdline") or "")[:200],
+                "agent": c.get("agent")
+                or guess_agent_from_process(str(c.get("comm") or ""), str(c.get("cmdline") or "")),
+                "cpu": float(c.get("cpu") or 0.0),
+            }
+        )
+    return runners, clients
 
 
 def parse_expires_at(value: str | None) -> float | None:

@@ -15,6 +15,7 @@ from .observer import (
     build_digest_index,
     list_clients_on_port,
     list_llama_runners,
+    load_host_obs,
     parse_expires_at,
     sample_gpus,
 )
@@ -70,6 +71,7 @@ class PassiveObserver:
         self._known_slot_ports: set[int] = set(self._parse_slots_ports())
         self._last_slots_scan = 0.0
         self._scan_lock = asyncio.Lock()
+        self._model_pulse_until: dict[str, float] = {}
 
     @staticmethod
     def _port_from_url(url: str) -> int:
@@ -391,6 +393,20 @@ class PassiveObserver:
                 port_model[remaining_ports[0]] = str(only)
         return port_model
 
+    def _merge_clients(
+        self,
+        host: list[dict[str, Any]],
+        local: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        by_pid: dict[Any, dict[str, Any]] = {}
+        for c in local + host:
+            pid = c.get("pid")
+            key = pid if pid is not None else f"{c.get('agent')}:{c.get('comm')}"
+            prev = by_pid.get(key)
+            if not prev or float(c.get("cpu") or 0) >= float(prev.get("cpu") or 0):
+                by_pid[key] = c
+        return list(by_pid.values())
+
     def _client_candidates(self, clients: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for c in clients:
@@ -405,33 +421,42 @@ class PassiveObserver:
 
         Prefers the connected client with the highest process CPU; long-lived
         `serve` daemons are de-prioritized so idle keep-alives don't steal credit.
+        Dashboard (llmperf) is deprioritized when other agents are present.
         """
         candidates = self._client_candidates(clients)
         if not candidates:
             return "external"
-        if len(candidates) == 1:
-            return str(candidates[0].get("agent") or "external")
+
+        # Mac'te panel her zaman bağlı görünür — dış ajanları tercih et
+        external = [
+            c
+            for c in candidates
+            if (c.get("agent") or "") not in {"llmperf", "uvicorn"}
+        ]
+        pool = external or candidates
+
+        if len(pool) == 1:
+            return str(pool[0].get("agent") or "external")
 
         scored: list[tuple[float, float, str]] = []
-        for c in candidates:
+        for c in pool:
             pid = c.get("pid")
-            if not isinstance(pid, int):
-                continue
-            _norm, raw, _rss = self.cpu.sample(pid)
+            file_cpu = float(c.get("cpu") or 0.0)
+            raw = file_cpu
+            if isinstance(pid, int) and pid > 0 and file_cpu <= 0:
+                _norm, raw, _rss = self.cpu.sample(pid)
             cmdline = (c.get("cmdline") or "").lower()
             is_service = " serve" in f" {cmdline}" or cmdline.rstrip().endswith("serve")
-            # One-shot clients beat idle service keep-alives
             score = raw + (0.0 if is_service else 40.0)
+            # llmperf/dashboard düşük öncelik
+            if (c.get("agent") or "") in {"llmperf", "uvicorn"}:
+                score -= 30.0
             scored.append((score, raw, str(c.get("agent") or "external")))
         if not scored:
-            return str(candidates[0].get("agent") or "external")
+            return str(pool[0].get("agent") or "external")
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        _score, top_raw, top_agent = scored[0]
-        second_score = scored[1][0] if len(scored) > 1 else 0.0
-        if top_raw >= 2.0 or _score >= second_score + 10:
-            return top_agent
-        return top_agent
+        return scored[0][2]
 
     async def _update_slot_metrics(
         self,
@@ -570,7 +595,11 @@ class PassiveObserver:
         digest_index.update(self._blob_to_model)
 
         runners = list_llama_runners(self.cpu)
-        # Docker Desktop / Mac: host süreçleri görünmez veya ad farklı → /slots port keşfi
+        host_runners, host_clients = load_host_obs()
+        # Mac Docker: host dosyasındaki runner'lar öncelikli
+        if host_runners:
+            runners = host_runners
+
         need_ports = (
             settings.slots_discover
             or bool(settings.slots_ports)
@@ -584,14 +613,35 @@ class PassiveObserver:
             for r in runners:
                 if r.port:
                     self._known_slot_ports.add(r.port)
-            # Süreç var ama --port yoksa host port dosyasını kullan
             if need_ports and not any(r.port for r in runners):
                 await self._refresh_known_slot_ports()
                 synth = self._synthetic_runners_from_ports()
                 if synth:
-                    runners = synth
+                    # Host runner CPU bilgisini koru; porta sahip synth ile birleştir
+                    by_port = {r.port: r for r in runners if r.port}
+                    merged: list[ProcSample] = []
+                    for s in synth:
+                        base = by_port.get(s.port)
+                        if base:
+                            merged.append(
+                                ProcSample(
+                                    pid=base.pid,
+                                    name=base.name,
+                                    cmdline=base.cmdline,
+                                    cpu_pct=base.cpu_pct,
+                                    rss_bytes=base.rss_bytes,
+                                    blob_sha=base.blob_sha,
+                                    port=s.port,
+                                    cpu_raw=base.cpu_raw,
+                                )
+                            )
+                        else:
+                            merged.append(s)
+                    runners = merged or synth
 
-        clients = list_clients_on_port(self._ollama_port)
+        # İstemciler: host dosyası (Docker Mac) + yerel tarama birleşimi
+        local_clients = list_clients_on_port(self._ollama_port)
+        clients = self._merge_clients(host_clients, local_clients)
         event_agent = self._select_active_agent(clients)
 
         # Önce slot'lardan model ipucu topla
@@ -641,8 +691,6 @@ class PassiveObserver:
                 status = "inferring"
             elif busy:
                 status = "busy"
-            elif slot_processing and not has_signal:
-                status = "loaded"
             else:
                 status = "loaded"
 
@@ -650,9 +698,16 @@ class PassiveObserver:
             if (
                 (not model or model == "unknown")
                 and not inferring
+                and not busy
                 and (not r.pid or r.pid == 0)
             ):
                 continue
+
+            row_agent = None
+            if inferring:
+                row_agent = slot_meta.get("agent") or event_agent
+            elif busy:
+                row_agent = event_agent if event_agent != "external" else None
 
             row = {
                 "pid": r.pid if r.pid else None,
@@ -669,7 +724,7 @@ class PassiveObserver:
                 "avg_tps": slot_meta.get("avg_tps") if inferring else None,
                 "tokens": (slot_meta.get("tokens") or 0) if inferring else 0,
                 "prompt_tokens": slot_meta.get("prompt_tokens") or 0,
-                "agent": slot_meta.get("agent") if inferring else None,
+                "agent": row_agent,
             }
             observed.append(row)
             if model and model != "unknown":
@@ -700,6 +755,7 @@ class PassiveObserver:
                 and exp_ts is not None
                 and exp_ts > prev_exp + settings.expires_skew_sec
             ):
+                self._model_pulse_until[name] = now + settings.model_pulse_sec
                 self.store.push_activity(
                     {
                         "type": "use",
@@ -713,8 +769,12 @@ class PassiveObserver:
             if exp_ts is not None:
                 self.store._prev_expires[name] = exp_ts
 
+            pulsing = now < self._model_pulse_until.get(name, 0)
+
             if name not in runner_by_model:
                 ttl = round(exp_ts - now, 1) if exp_ts else None
+                # MLX / slots yok: expires nabzı veya bağlı dış ajan → busy
+                status = "busy" if pulsing else "resident"
                 observed.append(
                     {
                         "pid": None,
@@ -725,12 +785,12 @@ class PassiveObserver:
                         "port": None,
                         "inferring": False,
                         "slot_processing": False,
-                        "status": "resident",
+                        "status": status,
                         "expires_in_sec": ttl,
                         "size_vram": m.get("size_vram"),
                         "live_tps": None,
                         "tokens": 0,
-                        "agent": None,
+                        "agent": event_agent if pulsing else None,
                     }
                 )
             else:
@@ -738,6 +798,13 @@ class PassiveObserver:
                 row["size_vram"] = m.get("size_vram")
                 if exp_ts:
                     row["expires_in_sec"] = round(exp_ts - now, 1)
+                # Nabız varken resident/loaded'ı busy yap (slots yoksa)
+                if pulsing and row.get("status") in {"resident", "loaded"} and not row.get(
+                    "inferring"
+                ):
+                    row["status"] = "busy"
+                    if not row.get("agent"):
+                        row["agent"] = event_agent
 
         for gone in self.store._prev_running_names - current_names:
             self.store.push_activity(

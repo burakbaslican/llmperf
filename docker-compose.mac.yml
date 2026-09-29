@@ -1,7 +1,7 @@
 # LLMPerf — Docker Desktop on Apple Silicon (M1 / M2 Ultra / M3)
 #
 # Host network yok. Ollama host'ta çalışır → host.docker.internal.
-# llama-server /slots portları host script ile .llmperf-slots-ports dosyasına yazılır.
+# Host istemci/runner gözlemi: .llmperf-host-obs (install script yazar).
 services:
   llmperf:
     build: .
@@ -14,6 +14,7 @@ services:
       LLMPERF_OLLAMA_BASE_URL: ${LLMPERF_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       LLMPERF_SLOTS_HOST: ${LLMPERF_SLOTS_HOST:-host.docker.internal}
       LLMPERF_SLOTS_PORTS_FILE: /app/.slots-ports
+      LLMPERF_HOST_OBS_FILE: /app/.host-obs
       LLMPERF_SLOTS_DISCOVER: ${LLMPERF_SLOTS_DISCOVER:-false}
       LLMPERF_POLL_INTERVAL_SEC: ${LLMPERF_POLL_INTERVAL_SEC:-0.4}
       LLMPERF_PROC_ROOT: ""
@@ -21,4 +22,5 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./.llmperf-slots-ports:/app/.slots-ports:ro
+      - ./.llmperf-host-obs:/app/.host-obs:ro
     restart: unless-stopped

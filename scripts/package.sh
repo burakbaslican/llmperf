@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${1:-1.2.5}"
+VERSION="${1:-1.2.6}"
 NAME="llmperf-${VERSION}"
 OUT_DIR="${ROOT}/dist"
 STAGE="${OUT_DIR}/${NAME}"
@@ -18,7 +18,7 @@ cp -a backend frontend "${STAGE}/"
 cp Dockerfile docker-compose.yml docker-compose.bridge.yml docker-compose.mac.yml \
   .dockerignore .env.example install.sh install-mac.sh install-docker-mac.sh README.md "${STAGE}/"
 mkdir -p "${STAGE}/scripts"
-cp scripts/detect-slots-ports.sh "${STAGE}/scripts/" 2>/dev/null || true
+cp scripts/detect-slots-ports.sh scripts/detect-host-obs.py "${STAGE}/scripts/" 2>/dev/null || true
 # .gitignore opsiyonel
 [[ -f .gitignore ]] && cp .gitignore "${STAGE}/"
 
@@ -29,6 +29,7 @@ find "${STAGE}" -name '*.pyc' -delete 2>/dev/null || true
 
 chmod +x "${STAGE}/install.sh" "${STAGE}/install-mac.sh" "${STAGE}/install-docker-mac.sh" 2>/dev/null || true
 [[ -f "${STAGE}/scripts/detect-slots-ports.sh" ]] && chmod +x "${STAGE}/scripts/detect-slots-ports.sh"
+[[ -f "${STAGE}/scripts/detect-host-obs.py" ]] && chmod +x "${STAGE}/scripts/detect-host-obs.py"
 
 ARCHIVE="${OUT_DIR}/${NAME}.tar.gz"
 tar -C "${OUT_DIR}" -czf "${ARCHIVE}" "${NAME}"

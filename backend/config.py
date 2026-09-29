@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     slots_ports: str = ""
     # Host'un yazdığı port listesi dosyası (örn. /app/.slots-ports)
     slots_ports_file: str = ""
+    # Host gözlem JSON (Mac Docker): clients + runners
+    host_obs_file: str = ""
     # /proc'ta runner yoksa host'ta /slots portlarını tara (yavaş; Mac'te file tercih)
     slots_discover: bool = False
     # Keşif taraması aralığı (dahil); örn. 30000-65535
@@ -26,6 +28,8 @@ class Settings(BaseSettings):
     slots_scan_end: int = 65535
     # /proc kökü (Docker'da /host/proc bağlanabilir; boşsa /proc)
     proc_root: str = "/proc"
+    # expires nabzı sonrası modeli "busy" gösterme süresi (sn)
+    model_pulse_sec: float = 5.0
 
     class Config:
         env_prefix = "LLMPERF_"

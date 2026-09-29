@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${1:-1.2.5}"
+VERSION="${1:-1.2.6}"
 NAME="llmperf-docker-mac-arm64-${VERSION}"
 OUT_DIR="${ROOT}/dist"
 STAGE="${OUT_DIR}/${NAME}"
@@ -17,14 +17,14 @@ mkdir -p "${STAGE}/scripts"
 cp -a backend frontend "${STAGE}/"
 cp Dockerfile docker-compose.mac.yml .dockerignore .env.example \
   install-docker-mac.sh README.md "${STAGE}/"
-cp scripts/detect-slots-ports.sh "${STAGE}/scripts/"
+cp scripts/detect-slots-ports.sh scripts/detect-host-obs.py "${STAGE}/scripts/"
 [[ -f .gitignore ]] && cp .gitignore "${STAGE}/"
 
 find "${STAGE}" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 find "${STAGE}" -type d -name '.venv' -exec rm -rf {} + 2>/dev/null || true
 find "${STAGE}" -name '*.pyc' -delete 2>/dev/null || true
 
-chmod +x "${STAGE}/install-docker-mac.sh" "${STAGE}/scripts/detect-slots-ports.sh"
+chmod +x "${STAGE}/install-docker-mac.sh" "${STAGE}/scripts/detect-slots-ports.sh" "${STAGE}/scripts/detect-host-obs.py"
 
 cat > "${STAGE}/MAC-DOCKER.md" <<'EOF'
 # LLMPerf — Docker Desktop (M1 / M2 Ultra / M3)

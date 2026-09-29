@@ -8,6 +8,7 @@ __pycache__/
 dist/
 *.tar.gz
 .llmperf-slots-ports
+.llmperf-host-obs
 .llmperf.pid
 .llmperf.log
 .llmperf-ports-watch.pid

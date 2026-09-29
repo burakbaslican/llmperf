@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 PORTS_FILE="${ROOT}/.llmperf-slots-ports"
+OBS_FILE="${ROOT}/.llmperf-host-obs"
 WATCH_PID_FILE="${ROOT}/.llmperf-ports-watch.pid"
 COMPOSE_FILE="docker-compose.mac.yml"
 
@@ -40,12 +41,17 @@ ensure_env() {
     echo ".env oluşturuldu (Mac Docker ayarlarıyla)."
   fi
   touch "$PORTS_FILE"
+  echo '{}' >"$OBS_FILE"
 }
 
 write_ports() {
   local ports
   ports="$("${ROOT}/scripts/detect-slots-ports.sh" 2>/dev/null || true)"
   echo "$ports" >"$PORTS_FILE"
+  chmod +x "${ROOT}/scripts/detect-host-obs.py" 2>/dev/null || true
+  if command -v python3 >/dev/null 2>&1; then
+    python3 "${ROOT}/scripts/detect-host-obs.py" >"$OBS_FILE" 2>/dev/null || echo '{}' >"$OBS_FILE"
+  fi
 }
 
 start_ports_watch() {

@@ -10,6 +10,7 @@ VENV="${ROOT}/.venv"
 PID_FILE="${ROOT}/.llmperf.pid"
 LOG_FILE="${ROOT}/.llmperf.log"
 PORTS_FILE="${ROOT}/.llmperf-slots-ports"
+OBS_FILE="${ROOT}/.llmperf-host-obs"
 WATCH_PID_FILE="${ROOT}/.llmperf-ports-watch.pid"
 HOST="${LLMPERF_HOST:-127.0.0.1}"
 PORT="${LLMPERF_PORT:-8080}"
@@ -68,18 +69,21 @@ setup_venv() {
 write_ports() {
   local ports
   chmod +x "${ROOT}/scripts/detect-slots-ports.sh" 2>/dev/null || true
+  chmod +x "${ROOT}/scripts/detect-host-obs.py" 2>/dev/null || true
   ports="$("${ROOT}/scripts/detect-slots-ports.sh" 2>/dev/null || true)"
   echo "$ports" >"$PORTS_FILE"
+  python3 "${ROOT}/scripts/detect-host-obs.py" >"$OBS_FILE" 2>/dev/null || echo '{}' >"$OBS_FILE"
 }
 
 start_ports_watch() {
   stop_ports_watch
   touch "$PORTS_FILE"
+  echo '{}' >"$OBS_FILE"
   write_ports
   (
     while true; do
       write_ports
-      sleep 2
+      sleep 1
     done
   ) &
   echo $! >"$WATCH_PID_FILE"
@@ -126,6 +130,7 @@ cmd_up() {
     LLMPERF_POLL_INTERVAL_SEC="${LLMPERF_POLL_INTERVAL_SEC:-0.4}" \
     LLMPERF_SLOTS_HOST="${LLMPERF_SLOTS_HOST:-127.0.0.1}" \
     LLMPERF_SLOTS_PORTS_FILE="${PORTS_FILE}" \
+    LLMPERF_HOST_OBS_FILE="${OBS_FILE}" \
     LLMPERF_PROC_ROOT="" \
     "${VENV}/bin/uvicorn" backend.main:app \
       --host "$HOST" \
