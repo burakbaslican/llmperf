@@ -147,6 +147,7 @@
   }
 
   function fillVram(observed, gpus, running) {
+    if (!els.mVram || !els.mVramSub) return;
     const byModel = new Map();
     for (const o of observed || []) {
       const name = (o.model || "").trim();
@@ -160,7 +161,8 @@
       const v = Number(m.size_vram ?? m.size ?? 0);
       if (v > 0) byModel.set(name, Math.max(byModel.get(name) || 0, v));
     }
-    let used = [...byModel.values()].reduce((a, b) => a + b, 0);
+    let used = 0;
+    for (const v of byModel.values()) used += v;
     let total = null;
     let gpuUsed = null;
     if (gpus && gpus.length) {
@@ -168,8 +170,8 @@
         (a, b) => (b.mem_used || 0) - (a.mem_used || 0) || (b.mem_total || 0) - (a.mem_total || 0)
       );
       const g = ranked[0];
-      if (g.mem_total) total = Number(g.mem_total);
-      if (g.mem_used != null) gpuUsed = Number(g.mem_used);
+      if (g?.mem_total) total = Number(g.mem_total);
+      if (g?.mem_used != null) gpuUsed = Number(g.mem_used);
     }
     // Model VRAM yoksa mactop / unified memory
     if (used <= 0 && gpuUsed != null) used = gpuUsed;
@@ -193,20 +195,31 @@
     const agentMap = throughput?.agent_tps || live?.agent_tps || {};
     const entries = Object.entries(agentMap).sort((a, b) => b[1] - a[1]);
 
-    els.mTotalTps.textContent = fmtNum(total);
-    els.mTotalSub.textContent = entries.length
-      ? `${entries.length} ajan · Σ`
-      : "tüm ajanlar";
+    if (els.mTotalTps) els.mTotalTps.textContent = fmtNum(total);
+    if (els.mTotalSub) {
+      els.mTotalSub.textContent = entries.length
+        ? `${entries.length} ajan · Σ`
+        : "tüm ajanlar";
+    }
 
-    els.mTokens.textContent = String(throughput?.active_tokens ?? live?.tokens ?? 0);
-    els.mTokensSub.textContent = live?.model ? live.model : "bu tur";
+    if (els.mTokens) {
+      els.mTokens.textContent = String(throughput?.active_tokens ?? live?.tokens ?? 0);
+    }
+    if (els.mTokensSub) {
+      els.mTokensSub.textContent = live?.model ? live.model : "bu tur";
+    }
 
-    pushLiveSample(throughput, live);
+    try {
+      pushLiveSample(throughput, live);
+    } catch {
+      /* chart henüz hazır olmayabilir */
+    }
 
+    if (!els.agentTpsBars) return;
     if (!entries.length) {
       els.agentTpsBars.innerHTML =
         live?.status === "running"
-          ? `<div class="agent-tps-empty">Üretim var · tok/s yok (MLX/runner) · ${live.model || ""} · GPU ${fmtNum(live.gpu_util_pct, 0)}%</div>`
+          ? `<div class="agent-tps-empty">Üretim var · ${live.model || ""} · ${live.live_tps != null ? `${fmtNum(live.live_tps)} t/s` : "tok/s yok"} · GPU ${fmtNum(live.gpu_util_pct, 0)}%</div>`
           : `<div class="agent-tps-empty">Aktif çıkarım yok — ajan üretince tok/s burada toplanır.</div>`;
       return;
     }
@@ -415,6 +428,7 @@
 
   function fillGpu(gpus) {
     const list = gpus || [];
+    if (!els.mGpu || !els.mGpuSub) return;
     if (!list.length) {
       els.mGpu.textContent = "—";
       els.mGpuSub.textContent = "gpu yok";
@@ -436,11 +450,14 @@
 
   function fillClients(clients) {
     const list = clients || [];
-    els.mClients.textContent = String(list.length);
+    if (els.mClients) els.mClients.textContent = String(list.length);
     const agents = [...new Set(list.map((c) => c.agent).filter(Boolean))].slice(0, 3);
     const models = [...new Set(list.map((c) => c.model).filter(Boolean))].slice(0, 2);
-    els.mClientsSub.textContent =
-      (agents.join(", ") || "tcp :11434") + (models.length ? ` · ${models.join(", ")}` : "");
+    if (els.mClientsSub) {
+      els.mClientsSub.textContent =
+        (agents.join(", ") || "tcp :11434") + (models.length ? ` · ${models.join(", ")}` : "");
+    }
+    if (!els.clientsBody) return;
     els.clientsBody.innerHTML = list
       .map((c) => `<tr>
         <td>${c.agent || "—"}</td>
@@ -569,21 +586,28 @@
   }
 
   function applySnapshot(snapshot) {
+    const safe = (fn) => {
+      try {
+        fn();
+      } catch (err) {
+        console.warn("llmperf snapshot step failed", err);
+      }
+    };
     if (snapshot.version && els.appVersion) {
       els.appVersion.textContent = `v${String(snapshot.version).replace(/^v/, "")}`;
     }
-    setOllamaStatus(snapshot.ollama);
-    fillModels(snapshot.models);
-    fillRunning(snapshot.running);
-    fillThroughput(snapshot.throughput, snapshot.live);
-    fillObserved(snapshot.observed);
-    fillVram(snapshot.observed, snapshot.gpus, snapshot.running);
-    fillGpu(snapshot.gpus);
-    fillClients(snapshot.clients);
-    fillActivity(snapshot.activity);
-    fillHistory(snapshot.history);
-    updateHero(snapshot);
-    updateCharts(snapshot.history);
+    safe(() => setOllamaStatus(snapshot.ollama));
+    safe(() => fillModels(snapshot.models));
+    safe(() => fillRunning(snapshot.running));
+    safe(() => fillThroughput(snapshot.throughput, snapshot.live));
+    safe(() => fillObserved(snapshot.observed));
+    safe(() => fillVram(snapshot.observed, snapshot.gpus, snapshot.running));
+    safe(() => fillGpu(snapshot.gpus));
+    safe(() => fillClients(snapshot.clients));
+    safe(() => fillActivity(snapshot.activity));
+    safe(() => fillHistory(snapshot.history));
+    safe(() => updateHero(snapshot));
+    safe(() => updateCharts(snapshot.history));
   }
 
   async function refreshOnce() {

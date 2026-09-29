@@ -103,8 +103,8 @@ async def lifespan(_app: FastAPI):
             pass
 
 
-app = FastAPI(title="LLMPerf", version="1.3.1", lifespan=lifespan)
-APP_VERSION = "1.3.1"
+app = FastAPI(title="LLMPerf", version="1.3.2", lifespan=lifespan)
+APP_VERSION = "1.3.2"
 
 
 @app.get("/api/health")
@@ -282,7 +282,13 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.get("/")
 async def index():
-    return FileResponse(FRONTEND / "index.html")
+    return FileResponse(
+        FRONTEND / "index.html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 app.mount("/static", StaticFiles(directory=FRONTEND), name="static")
